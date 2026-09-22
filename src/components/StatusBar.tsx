@@ -25,6 +25,10 @@ export function StatusBar(): JSX.Element {
   const brushSize = useApp((s) => s.brushSize);
   const editedCount = useApp((s) => s.editedCount);
   const history = useApp((s) => s.history);
+  // 逐个原子取，返回对象会让 useSyncExternalStore 每次都判定为「变了」
+  const batchTotal = useApp((s) => s.batchItems.length);
+  const batchDone = useApp((s) => s.batchItems.filter((i) => i.status === 'done').length);
+  const batchRunning = useApp((s) => s.batchRunning);
 
   const original = source ? `${source.originalWidth}×${source.originalHeight}` : '—';
   const working = source ? `${source.imageData.width}×${source.imageData.height}` : '—';
@@ -105,15 +109,23 @@ export function StatusBar(): JSX.Element {
         </>
       )}
 
-      {(busy || converting) && (
+      {(busy || converting || batchRunning) && (
         <>
           <span className="status__item status__item--accent">
-            <b>{busy ?? '转换中…'}</b>
+            <b>{busy ?? (batchRunning ? '批量转换中…' : '转换中…')}</b>
           </span>
           <span className="status__sep" />
         </>
       )}
-      <span className="status__item">M4 · 智能辅助</span>
+      {batchTotal > 0 && (
+        <>
+          <span className="status__item">
+            批量 <b>{batchDone}/{batchTotal}</b>
+          </span>
+          <span className="status__sep" />
+        </>
+      )}
+      <span className="status__item">M5 · 批量处理</span>
     </footer>
   );
 }

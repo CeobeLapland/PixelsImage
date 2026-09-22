@@ -106,15 +106,23 @@ async function makePreview(
   }
 }
 
-/** 从 File / Blob 加载源图 */
-export async function loadSourceImage(
-  file: File | Blob,
-  fallbackName = '粘贴的图片',
-): Promise<SourceImage> {
-  const name = file instanceof File ? file.name : fallbackName;
-  const type = file.type || 'image/*';
-  const bytes = file.size;
+/**
+ * 解码后的像素数据（不含显示用位图）。
+ *
+ * 批量处理一次要解码几十张图，而显示位图（最长边 2048）每张就要好几个 MB，
+ * 队列里根本用不上。所以把它拆出来，批量走这条路。
+ */
+export interface DecodedImage {
+  /** 转换实际使用的源数据；超出处理上限时已降采样 */
+  imageData: ImageData;
+  /** 原始文件尺寸 */
+  originalWidth: number;
+  originalHeight: number;
+  /** 是否因超出处理上限而降采样 */
+  truncated: boolean;
+}
 
+export async function decodeImage(file: File | Blob): Promise<DecodedImage> {
   let bitmap: ImageBitmap;
   try {
     bitmap = await createImageBitmap(file);
@@ -132,7 +140,6 @@ export async function loadSourceImage(
     }
 
     const plan = planSourceSize(originalWidth, originalHeight);
-
     const imageData = drawToImageData(
       bitmap,
       originalWidth,
@@ -142,21 +149,72 @@ export async function loadSourceImage(
       true,
     );
 
-    const { bitmap: previewBitmap, scale } = await makePreview(imageData);
+    return { imageData, originalWidth, originalHeight, truncated: plan.truncated };
+  } finally {
+    bitmap.close();
+  }
+}
 
-    idSeq += 1;
-    return {
-      id: `src-${Date.now().toString(36)}-${idSeq}`,
-      name,
-      type,
-      bytes,
-      originalWidth,
-      originalHeight,
-      imageData,
-      previewBitmap,
-      previewScale: scale,
-      truncated: plan.truncated,
-    };
+/** 从 File / Blob 加载源图（含画布显示用的预览位图） */
+export async function loadSourceImage(
+  file: File | Blob,
+  fallbackName = '粘贴的图片',
+): Promise<SourceImage> {
+  const name = file instanceof File ? file.name : fallbackName;
+  const type = file.type || 'image/*';
+  const bytes = file.size;
+
+  const decoded = await decodeImage(file);
+  const { bitmap: previewBitmap, scale } = await makePreview(decoded.imageData);
+
+  idSeq += 1;
+  return {
+    id: `src-${Date.now().toString(36)}-${idSeq}`,
+    name,
+    type,
+    bytes,
+    originalWidth: decoded.originalWidth,
+    originalHeight: decoded.originalHeight,
+    imageData: decoded.imageData,
+    previewBitmap,
+    previewScale: scale,
+    truncated: decoded.truncated,
+  };
+}
+
+/** 队列缩略图的最长边。列表里只要认得出来是哪张图就够了 */
+const THUMB_MAX_EDGE = 96;
+
+/**
+ * 生成列表用的小缩略图。
+ * 缩略图是**尽力而为**的：生成失败（格式怪、内存紧）不该让整张图进不了队列，
+ * 所以失败时返回 null，由 UI 退化成文件名占位。
+ */
+export async function makeThumbnail(file: File | Blob): Promise<ImageBitmap | null> {
+  let bitmap: ImageBitmap;
+  try {
+    bitmap = await createImageBitmap(file);
+  } catch {
+    return null;
+  }
+
+  const edge = Math.max(bitmap.width, bitmap.height);
+  if (edge <= THUMB_MAX_EDGE) return bitmap;
+
+  try {
+    const ratio = THUMB_MAX_EDGE / edge;
+    const w = Math.max(1, Math.round(bitmap.width * ratio));
+    const h = Math.max(1, Math.round(bitmap.height * ratio));
+    const canvas = getScratchCanvas(w, h);
+    const ctx = get2d(canvas);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.clearRect(0, 0, w, h);
+    ctx.drawImage(bitmap, 0, 0, bitmap.width, bitmap.height, 0, 0, w, h);
+    const thumb = await createImageBitmap(ctx.getImageData(0, 0, w, h));
+    return thumb;
+  } catch {
+    return null;
   } finally {
     bitmap.close();
   }

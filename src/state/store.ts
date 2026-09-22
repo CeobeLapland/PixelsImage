@@ -16,13 +16,35 @@
 
 import { create, type StateCreator } from 'zustand';
 
+import { DEFAULT_NAME_TEMPLATE } from '@/core/batch/naming';
+import {
+  parsePresets,
+  serializePresets,
+  uniquePresetName,
+  type BatchPreset,
+} from '@/core/batch/presets';
+import {
+  createBatchItems,
+  mergeSettings,
+  nextPendingItem,
+  patchItem,
+  removeItem,
+  resetResults,
+  settingsFingerprint,
+  summarize,
+  type BatchItem,
+} from '@/core/batch/queue';
 import { applyCellEdits, applyEditWrites, changesToEdits, cloneEditLayer, countEdits, resampleEditLayer, writeCell, type CellEdit, type CellWrite } from '@/core/edit';
-import { isProbablyImage, loadSourceImage } from '@/core/image';
+import { composite } from '@/core/composite';
+import { countUsedColors } from '@/core/color/quantize';
+import { decodeImage, isProbablyImage, loadSourceImage, makeThumbnail } from '@/core/image';
 import { checkSeams, type SeamReport } from '@/core/assists/tile';
-import { planOutline, type OutlineOptions } from '@/core/assists/outline';
+import { countSolidCells, planOutline, type OutlineOptions } from '@/core/assists/outline';
 import { planShade, type ShadeOptions } from '@/core/assists/shade';
+import { downloadBlob } from '@/core/exporters/png';
 import { BUILTIN_PALETTES, DEFAULT_PALETTE_ID, resolvePalette } from '@/palettes/builtin';
 import { mergeSimilarColors, remapEditLayer, remapGridIndices, sortColors, type SortKey } from '@/palettes/ops';
+import { buildBatchZip, getBatchConverter } from './batch';
 import {
   createEditLayer,
   makeDefaultSettings,
@@ -220,6 +242,72 @@ export interface AssistSlice {
   runSeamCheck: () => void;
 }
 
+/**
+ * 批量处理（M5）。
+ *
+ * **参数是独立的一份**（`batchSettings`），不与编辑器共用。
+ * 这是踩过的坑：一开始想直接复用「转换」面板那套参数，看起来省事，
+ * 但批量在后台出素材时，编辑器的参数随时会被你调着试效果 ——
+ * 两边互相串改，最后既不知道批量用的什么参数，刚调好的预览也被改了。
+ * 独立一份 + 一个「从当前参数同步」按钮，代价只是多点一下。
+ *
+ * 队列项的参数 = `batchSettings` + 该项的 `override`。存差异而不是存全量：
+ * 绝大多数图共用一套参数，只有个别图需要单独改尺寸。
+ *
+ * 转换用的是**独立的** Worker（见 state/batch.ts），所以批量在后台跑的时候，
+ * 编辑器里的单图预览照常可调、互不打断。
+ */
+export interface BatchSlice {
+  batchItems: BatchItem[];
+  /** 批量专用的转换参数 */
+  batchSettings: ConvertSettings;
+  /** 命名模板，占位符见 core/batch/naming.ts */
+  batchTemplate: string;
+  /** 导出放大倍数 */
+  batchScale: number;
+  /** 透明区是否压白底 */
+  batchOpaque: boolean;
+  batchRunning: boolean;
+  /** 跑这一轮时用的参数指纹：与当前参数不一致就说明「结果已过期」 */
+  batchRunFingerprint: string | null;
+  /** 正在编辑器里单独微调的队列项 */
+  batchActiveId: string | null;
+  batchPresets: BatchPreset[];
+
+  /** 加入队列；顺便生成缩略图（失败也不影响入队） */
+  addBatchFiles: (files: readonly File[]) => void;
+  removeBatchItem: (id: string) => void;
+  clearBatch: () => void;
+  /** 设置某一项的逐项参数覆盖 */
+  patchBatchItem: (id: string, patch: Partial<ConvertSettings>) => void;
+  clearBatchOverride: (id: string) => void;
+  patchBatchSettings: (patch: Partial<ConvertSettings>) => void;
+  patchBatchPreprocess: (patch: Partial<PreprocessSettings>) => void;
+  setBatchTemplate: (template: string) => void;
+  setBatchScale: (scale: number) => void;
+  setBatchOpaque: (opaque: boolean) => void;
+  /** 把「转换」面板里当前这套参数抄过来当批量参数 */
+  syncBatchSettings: () => void;
+  runBatch: () => Promise<void>;
+  stopBatch: () => void;
+  /** 已完成的项退回待处理，用于改完参数重跑 */
+  resetBatchResults: () => void;
+  /** 把该项的源图与参数送进主编辑器单独微调 */
+  editBatchItem: (id: string) => Promise<void>;
+  /**
+   * 把编辑器里当前这张图（**含手工修改**）写回队列项，作为它的导出内容。
+   *
+   * 为什么需要显式一步：手改住在编辑层里，队列项手里只有一份「参数产物」的网格。
+   * 不写回的话，用户在编辑器里改了半天、导出 zip 却还是原样 —— 属于静默丢改动，
+   * 绝不能靠「记得回单图导出」这种约定来兜。
+   */
+  commitEditorToBatch: (id: string) => void;
+  exportBatchZip: () => Promise<void>;
+  saveBatchPreset: (name: string) => void;
+  applyBatchPreset: (id: string) => void;
+  removeBatchPreset: (id: string) => void;
+}
+
 export interface ToolSlice {
   tool: ToolId;
   brushSize: number;
@@ -278,6 +366,7 @@ export type AppStore = SourceSlice &
   EditSlice &
   PaletteSlice &
   AssistSlice &
+  BatchSlice &
   ToolSlice &
   UiSlice;
 
@@ -286,6 +375,8 @@ export type AppStore = SourceSlice &
 const TOAST_TTL = 6000;
 let toastSeq = 0;
 let paletteSeq = 0;
+/** 批量跑批的轮次标记：自增即表示「上一轮作废」（用户点了停止） */
+let batchRunToken = 0;
 
 const IDENTITY_VIEW: ViewTransform = { zoom: 1, panX: 0, panY: 0 };
 
@@ -327,6 +418,28 @@ function saveCustomPalettes(customs: Record<string, Palette | undefined>): void 
 function nextCustomId(): string {
   paletteSeq += 1;
   return `custom-${Date.now().toString(36)}-${paletteSeq}`;
+}
+
+/** 批处理预设的持久化键。与调色板同理，带版本号 */
+const BATCH_PRESET_STORAGE_KEY = 'pixelsimage.batchPresets.v1';
+
+function loadBatchPresets(): BatchPreset[] {
+  try {
+    if (typeof localStorage === 'undefined') return [];
+    const raw = localStorage.getItem(BATCH_PRESET_STORAGE_KEY);
+    return raw ? parsePresets(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveBatchPresets(presets: readonly BatchPreset[]): void {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem(BATCH_PRESET_STORAGE_KEY, serializePresets(presets));
+  } catch {
+    // 存不下就算了，绝不让持久化失败影响当前操作（与调色板同一策略）
+  }
 }
 
 /**
@@ -826,7 +939,29 @@ const createAssistSlice: StateCreator<AppStore, [], [], AssistSlice> = (set, get
         get().pushToast('warn', '还没有像素图，先调一下转换参数');
         return;
       }
-      applyWrites('自动描边', planOutline(baseGrid, editLayer, opts));
+      const writes = planOutline(baseGrid, editLayer, opts);
+      if (writes.length === 0) {
+        const solid = countSolidCells(baseGrid, editLayer);
+        const total = baseGrid.w * baseGrid.h;
+        const mode = opts.mode ?? 'outside';
+        // 「没效果」这个反馈里最常见的其实是「这张图没有透明区域」：
+        // 外缘描边要有空白可画，整张实心时它正确地什么也不做。
+        // 直接说清楚，比让人以为功能坏了强。
+        if (solid === total && (mode === 'outside' || mode === 'both')) {
+          get().pushToast(
+            'warn',
+            '这张图没有透明区域（整张都是实心），外缘描边无处可画。想给形状勾边请选「内缘」',
+          );
+          return;
+        }
+        if (solid === 0) {
+          get().pushToast('warn', '这张图全是透明格，没有形状可描边');
+          return;
+        }
+        get().pushToast('info', '自动描边：形状边缘已经都是这个颜色了');
+        return;
+      }
+      applyWrites('自动描边', writes);
     },
 
     runShade: (opts) => {
@@ -857,6 +992,339 @@ const createAssistSlice: StateCreator<AppStore, [], [], AssistSlice> = (set, get
     },
   };
 };
+
+const createBatchSlice: StateCreator<AppStore, [], [], BatchSlice> = (set, get) => ({
+  batchItems: [],
+  batchSettings: makeDefaultSettings(),
+  batchTemplate: DEFAULT_NAME_TEMPLATE,
+  batchScale: 1,
+  batchOpaque: false,
+  batchRunning: false,
+  batchRunFingerprint: null,
+  batchActiveId: null,
+  batchPresets: loadBatchPresets(),
+
+  addBatchFiles: (files) => {
+    const images = files.filter(isProbablyImage);
+    const rejected = files.length - images.length;
+    if (images.length === 0) {
+      get().pushToast('warn', '没有可识别的图片文件');
+      return;
+    }
+
+    const items = createBatchItems(images);
+    set((s) => ({ batchItems: [...s.batchItems, ...items] }));
+    get().pushToast(
+      'info',
+      rejected > 0
+        ? `已加入 ${items.length} 张（跳过 ${rejected} 个非图片文件）`
+        : `已加入 ${items.length} 张待处理`,
+    );
+
+    // 缩略图异步补上：解码失败就留空，UI 退化成文件名占位，不影响入队
+    for (const item of items) {
+      void makeThumbnail(item.file).then((thumb) => {
+        if (!thumb) return;
+        // 队列可能已经被清空或该项已被移除，这里要再确认一次
+        if (!get().batchItems.some((i) => i.id === item.id)) {
+          thumb.close();
+          return;
+        }
+        set((s) => ({ batchItems: patchItem(s.batchItems, item.id, { thumb }) }));
+      });
+    }
+  },
+
+  removeBatchItem: (id) => {
+    const target = get().batchItems.find((i) => i.id === id);
+    target?.thumb?.close();
+    set((s) => ({
+      batchItems: removeItem(s.batchItems, id),
+      batchActiveId: s.batchActiveId === id ? null : s.batchActiveId,
+    }));
+  },
+
+  clearBatch: () => {
+    for (const item of get().batchItems) item.thumb?.close();
+    set({ batchItems: [], batchActiveId: null, batchRunFingerprint: null });
+  },
+
+  patchBatchItem: (id, patch) =>
+    set((s) => {
+      const target = s.batchItems.find((i) => i.id === id);
+      if (!target) return {};
+      return {
+        batchItems: patchItem(s.batchItems, id, {
+          override: { ...target.override, ...patch },
+          // 参数变了，这一项上次的结果就不算数了 —— 否则导出时会把旧结果也打进去
+          status: target.status === 'converting' ? 'converting' : 'pending',
+          result: undefined,
+          error: undefined,
+        }),
+      };
+    }),
+
+  clearBatchOverride: (id) =>
+    set((s) => {
+      const target = s.batchItems.find((i) => i.id === id);
+      if (!target || !target.override) return {};
+      return {
+        batchItems: patchItem(s.batchItems, id, {
+          override: undefined,
+          status: target.status === 'converting' ? 'converting' : 'pending',
+          result: undefined,
+          error: undefined,
+        }),
+      };
+    }),
+
+  patchBatchSettings: (patch) => set((s) => ({ batchSettings: { ...s.batchSettings, ...patch } })),
+
+  patchBatchPreprocess: (patch) =>
+    set((s) => ({
+      batchSettings: {
+        ...s.batchSettings,
+        preprocess: { ...s.batchSettings.preprocess, ...patch },
+      },
+    })),
+
+  setBatchTemplate: (batchTemplate) => set({ batchTemplate }),
+  setBatchScale: (batchScale) =>
+    set({ batchScale: Math.max(1, Math.min(64, Math.round(batchScale) || 1)) }),
+  setBatchOpaque: (batchOpaque) => set({ batchOpaque }),
+
+  syncBatchSettings: () => {
+    const settings = get().settings;
+    // 深拷贝一份 preprocess：两边共享同一个嵌套对象的话，
+    // 之后在任一侧改预处理开关都会把另一侧悄悄带上
+    set({ batchSettings: { ...settings, preprocess: { ...settings.preprocess } } });
+    get().pushToast('info', '已把当前转换参数同步为批量参数');
+  },
+
+  runBatch: async () => {
+    if (get().batchRunning) return;
+    if (get().batchItems.length === 0) {
+      get().pushToast('warn', '队列是空的，先加入几张图');
+      return;
+    }
+    if (!nextPendingItem(get().batchItems)) {
+      get().pushToast('info', '没有待处理的项，可以先「重置结果」再重跑');
+      return;
+    }
+
+    batchRunToken += 1;
+    const token = batchRunToken;
+    // 这一轮用哪套参数：一开始就定下来，跑到一半改参数不影响已开跑的这一轮，
+    // 否则同一批图里会出现两套参数，事后完全无法解释
+    const base = get().batchSettings;
+    const fingerprint = settingsFingerprint(base);
+    set({ batchRunning: true, batchRunFingerprint: fingerprint });
+
+    const converter = getBatchConverter();
+    const started = performance.now();
+    let failures = 0;
+
+    try {
+      for (;;) {
+        if (token !== batchRunToken) break;
+        const item = nextPendingItem(get().batchItems);
+        if (!item) break;
+
+        set((s) => ({ batchItems: patchItem(s.batchItems, item.id, { status: 'converting' }) }));
+
+        try {
+          const merged = mergeSettings(base, item.override);
+          const decoded = await decodeImage(item.file);
+          if (token !== batchRunToken) break;
+
+          const palette = resolvePalette(merged.paletteId, get().customPalettes);
+          const outcome = await converter.convert(
+            {
+              width: decoded.imageData.width,
+              height: decoded.imageData.height,
+              data: decoded.imageData.data,
+            },
+            merged,
+            palette,
+          );
+          if (token !== batchRunToken) break;
+
+          set((s) => ({
+            batchItems: patchItem(s.batchItems, item.id, {
+              status: 'done',
+              error: undefined,
+              result: {
+                grid: outcome.grid,
+                palette: outcome.palette,
+                targetW: outcome.targetW,
+                targetH: outcome.targetH,
+                usedColors: outcome.usedColors,
+                trimmed: outcome.trimmed,
+                ms: outcome.ms,
+              },
+            }),
+          }));
+        } catch (err) {
+          failures += 1;
+          // 单张失败不该中断整批：记下原因继续跑，最后一起汇报
+          set((s) => ({
+            batchItems: patchItem(s.batchItems, item.id, {
+              status: 'error',
+              error: err instanceof Error ? err.message : '转换失败',
+            }),
+          }));
+        }
+      }
+    } finally {
+      // 被停止时，正在转的那一项退回待处理，不然它会永远停在「转换中」
+      set((s) => ({
+        batchRunning: false,
+        batchItems: s.batchItems.map((i) =>
+          i.status === 'converting' ? { ...i, status: 'pending' as const } : i,
+        ),
+      }));
+    }
+
+    if (token !== batchRunToken) {
+      get().pushToast('info', '已停止批量转换');
+      return;
+    }
+
+    const stats = summarize(get().batchItems);
+    const seconds = ((performance.now() - started) / 1000).toFixed(1);
+    get().pushToast(
+      failures > 0 ? 'warn' : 'info',
+      `批量转换完成：成功 ${stats.done} 张、失败 ${failures} 张，用时 ${seconds} 秒`,
+    );
+  },
+
+  stopBatch: () => {
+    if (!get().batchRunning) return;
+    batchRunToken += 1;
+  },
+
+  resetBatchResults: () => {
+    if (get().batchRunning) {
+      get().pushToast('warn', '正在转换中，先停止再重置');
+      return;
+    }
+    const before = get().batchItems.length;
+    set((s) => ({ batchItems: resetResults(s.batchItems), batchRunFingerprint: null }));
+    get().pushToast('info', `已把 ${before} 项退回待处理`);
+  },
+
+  editBatchItem: async (id) => {
+    const item = get().batchItems.find((i) => i.id === id);
+    if (!item) return;
+    // 参数先算好：loadSource 会把上一张的结果清掉，之后 pipeline 会自动按这些参数重算
+    const merged = mergeSettings(get().batchSettings, item.override);
+    set({ batchActiveId: id });
+    await get().loadSource(item.file);
+    if (get().sourceStatus === 'error') return;
+    get().patchSettings(merged);
+    get().pushToast('info', `已在编辑器中打开「${item.fileName}」，参数取自批量设置`);
+  },
+
+  commitEditorToBatch: (id) => {
+    const state = get();
+    const item = state.batchItems.find((i) => i.id === id);
+    if (!item) {
+      state.pushToast('warn', '这项已经不在队列里了');
+      return;
+    }
+    const { baseGrid, editLayer, palette, info } = state;
+    if (!baseGrid) {
+      state.pushToast('warn', '编辑器里还没有像素图');
+      return;
+    }
+
+    // 取合成结果：手改必须进 zip，这与单图导出的口径一致（DESIGN 决策 19）
+    const grid = composite(baseGrid, editLayer);
+    set((s) => ({
+      batchItems: patchItem(s.batchItems, id, {
+        status: 'done',
+        error: undefined,
+        result: {
+          grid,
+          palette,
+          targetW: grid.w,
+          targetH: grid.h,
+          usedColors: countUsedColors(grid.indices, grid.alpha),
+          trimmed: info?.trimmed ?? false,
+          ms: info?.ms ?? 0,
+        },
+      }),
+      batchActiveId: id,
+    }));
+    state.pushToast(
+      'info',
+      state.editedCount > 0
+        ? `已把「${item.fileName}」含 ${state.editedCount} 格手改的结果写回队列`
+        : `已把「${item.fileName}」的结果写回队列`,
+    );
+  },
+
+  exportBatchZip: async () => {
+    const done = get().batchItems.filter((i) => i.status === 'done' && i.result);
+    if (done.length === 0) {
+      get().pushToast('warn', '还没有转换完成的图片，先跑一轮批量转换');
+      return;
+    }
+    try {
+      const pkg = await buildBatchZip(get().batchItems, {
+        template: get().batchTemplate,
+        scale: get().batchScale,
+        background: get().batchOpaque ? '#ffffff' : 'transparent',
+      });
+      downloadBlob(pkg.blob, pkg.fileName);
+      get().pushToast('info', `已打包 ${pkg.imageCount} 张 PNG（含调色板与 report.txt）`);
+    } catch (err) {
+      get().pushToast('error', err instanceof Error ? err.message : '打包失败');
+    }
+  },
+
+  saveBatchPreset: (rawName) => {
+    const name = rawName.trim();
+    if (name === '') return;
+    const state = get();
+    const finalName = uniquePresetName(name, state.batchPresets.map((p) => p.name));
+    const preset: BatchPreset = {
+      id: `batch-preset-${Date.now().toString(36)}-${state.batchPresets.length}`,
+      name: finalName,
+      template: state.batchTemplate,
+      scale: state.batchScale,
+      opaque: state.batchOpaque,
+      // 深拷贝 preprocess：预设要能独立于当前状态存在
+      settings: { ...state.batchSettings, preprocess: { ...state.batchSettings.preprocess } },
+      savedAt: Date.now(),
+    };
+    const next = [preset, ...state.batchPresets];
+    saveBatchPresets(next);
+    set({ batchPresets: next });
+    get().pushToast('info', `已保存批处理预设「${finalName}」`);
+  },
+
+  applyBatchPreset: (id) => {
+    const preset = get().batchPresets.find((p) => p.id === id);
+    if (!preset) return;
+    set({
+      batchSettings: { ...preset.settings, preprocess: { ...preset.settings.preprocess } },
+      batchTemplate: preset.template,
+      batchScale: preset.scale,
+      batchOpaque: preset.opaque,
+    });
+    get().pushToast('info', `已套用批处理预设「${preset.name}」`);
+  },
+
+  removeBatchPreset: (id) => {
+    const state = get();
+    if (!state.batchPresets.some((p) => p.id === id)) return;
+    const next = state.batchPresets.filter((p) => p.id !== id);
+    saveBatchPresets(next);
+    set({ batchPresets: next });
+    state.pushToast('info', '已删除该批处理预设');
+  },
+});
 
 const createToolSlice: StateCreator<AppStore, [], [], ToolSlice> = (set) => ({
   tool: 'pencil',
@@ -924,6 +1392,7 @@ export const useApp = create<AppStore>()((...args) => ({
   ...createEditSlice(...args),
   ...createPaletteSlice(...args),
   ...createAssistSlice(...args),
+  ...createBatchSlice(...args),
   ...createToolSlice(...args),
   ...createUiSlice(...args),
 }));

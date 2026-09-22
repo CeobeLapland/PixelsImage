@@ -50,6 +50,25 @@ const NEIGHBORS_8: ReadonlyArray<readonly [number, number]> = [
 ];
 
 /**
+ * 统计非透明格数。
+ *
+ * 存在的理由很实际：`outside` 模式要有**透明区域**才能落笔。
+ * 用户拿一张不透明的照片来描边时，结果必然是零改动 —— 这是正确行为，
+ * 但只说「没有需要改动的地方」会让人以为功能坏了。调用方靠这个数字
+ * 区分「图本来就是实心的」与「形状已经描过了」，给出不同的提示。
+ */
+export function countSolidCells(base: PixelGrid, edit: EditLayer | null): number {
+  const { w, h } = base;
+  let solid = 0;
+  for (let y = 0; y < h; y += 1) {
+    for (let x = 0; x < w; x += 1) {
+      if (readCell(base, edit, x, y).alpha > 0) solid += 1;
+    }
+  }
+  return solid;
+}
+
+/**
  * 计算描边要写入的格子（不改动任何输入）。
  *
  * 关于 `clipToGrid`：CellWrite 只有 `index` 一个字段，表达不了「网格外的一格」，

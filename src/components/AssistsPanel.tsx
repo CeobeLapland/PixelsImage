@@ -60,6 +60,13 @@ export function AssistsPanel(): JSX.Element {
         onChange={(v) => setDiagonal(v)}
       />
       <Segmented label="位置" value={side} options={SIDE_OPTIONS} columns={3} onChange={setSide} />
+      {side === 'outside' && (
+        <p className="note">
+          <b>外缘</b>描边需要图里有透明区域才落得下笔（它画在形状外面的空白上）。
+          如果这张图整张都是实心、又没看到变化，请改选<b>内缘</b> ——
+          内缘是把形状最外一圈染成轮廓色，任何图都能用。
+        </p>
+      )}
       <button
         type="button"
         className="btn btn--primary btn--block"

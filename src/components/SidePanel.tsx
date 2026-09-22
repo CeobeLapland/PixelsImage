@@ -3,6 +3,7 @@ import { useEffect, useRef, type JSX } from 'react';
 import { formatBytes } from '@/core/image';
 import { isPreprocessIdentity } from '@/core/preprocess';
 import { useApp } from '@/state/store';
+import { BatchPanel } from './BatchPanel';
 import { ComparePanel } from './ComparePanel';
 import { ConvertPanel } from './ConvertPanel';
 import { ExportPanel } from './ExportPanel';
@@ -67,6 +68,8 @@ export function SidePanel(): JSX.Element {
   const editedCount = useApp((s) => s.editedCount);
   const palette = useApp((s) => s.palette);
   const preprocessActive = useApp((s) => !isPreprocessIdentity(s.settings.preprocess));
+  const batchTotal = useApp((s) => s.batchItems.length);
+  const batchDone = useApp((s) => s.batchItems.filter((i) => i.status === 'done').length);
 
   const sourceBytes = source
     ? source.imageData.width * source.imageData.height * 4 +
@@ -145,6 +148,20 @@ export function SidePanel(): JSX.Element {
           <ExportPanel />
         </Section>
 
+        <Section
+          title="批量处理"
+          defaultOpen={false}
+          badge={
+            batchTotal > 0 ? (
+              <span className="badge">
+                {batchDone}/{batchTotal}
+              </span>
+            ) : undefined
+          }
+        >
+          <BatchPanel />
+        </Section>
+
         {hasResult && info && (
           <Section title="转换结果" defaultOpen={false}>
             <Row k="网格尺寸" v={`${info.targetW} × ${info.targetH}`} />
@@ -166,8 +183,8 @@ export function SidePanel(): JSX.Element {
             ))}
           </ul>
           <p className="note">
-            当前处于 <b>M4</b>：调色板引擎与智能辅助都已可用 ——
-            提色/导入导出/全局换色，加自动描边、明暗分层、去背与平铺接缝检查。
+            当前处于 <b>M5</b>：在 M4（描边/明暗分层/去背/接缝检查）之上加了批量处理 ——
+            一次拖入多张图、共用一套参数转换、按模板命名、打成一个 zip 导出。
           </p>
         </Section>
       </div>
