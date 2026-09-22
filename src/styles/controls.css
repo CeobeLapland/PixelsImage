@@ -187,6 +187,26 @@
   border-color: var(--line-strong);
 }
 
+.textfield__input {
+  width: 100%;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg-inset);
+  color: var(--ink);
+  font-size: 11.5px;
+}
+
+.textfield__input:hover {
+  border-color: var(--line-strong);
+}
+
+.textfield__input:focus {
+  outline: none;
+  border-color: var(--accent-line);
+}
+
 .numberfield__input:focus {
   outline: none;
   border-color: var(--accent-line);

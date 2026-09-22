@@ -74,6 +74,11 @@ export interface PreprocessSettings {
   sharpen: number;
   /** 0-255，低于此值视为全透明；255 表示不处理 */
   alphaThreshold: number;
+  /**
+   * 边缘色晕清理：把半透明边缘的 RGB 换成相邻不透明像素的颜色，
+   * 消除抠图残留的背景色（绿幕边、白底灰边）。只在 alphaThreshold 生效后才有意义。
+   */
+  decontaminate: boolean;
 }
 
 export interface ConvertSettings {
@@ -201,6 +206,7 @@ export const DEFAULT_PREPROCESS: PreprocessSettings = {
   saturation: 0,
   sharpen: 0,
   alphaThreshold: 255,
+  decontaminate: false,
 };
 
 export const DEFAULT_CONVERT_SETTINGS: ConvertSettings = {

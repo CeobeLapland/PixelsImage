@@ -16,9 +16,12 @@
 
 import { create, type StateCreator } from 'zustand';
 
-import { applyCellEdits, changesToEdits, cloneEditLayer, countEdits, resampleEditLayer, writeCell, type CellEdit } from '@/core/edit';
+import { applyCellEdits, applyEditWrites, changesToEdits, cloneEditLayer, countEdits, resampleEditLayer, writeCell, type CellEdit, type CellWrite } from '@/core/edit';
 import { isProbablyImage, loadSourceImage } from '@/core/image';
-import { DEFAULT_PALETTE_ID, resolvePalette } from '@/palettes/builtin';
+import { checkSeams, type SeamReport } from '@/core/assists/tile';
+import { planOutline, type OutlineOptions } from '@/core/assists/outline';
+import { planShade, type ShadeOptions } from '@/core/assists/shade';
+import { BUILTIN_PALETTES, DEFAULT_PALETTE_ID, resolvePalette } from '@/palettes/builtin';
 import { mergeSimilarColors, remapEditLayer, remapGridIndices, sortColors, type SortKey } from '@/palettes/ops';
 import {
   createEditLayer,
@@ -190,8 +193,31 @@ export interface PaletteSlice {
   mergePaletteColors: (tolerance: number) => void;
   /** 新增一块自定义板并切过去 */
   addCustomPalette: (palette: Palette) => void;
+  /** 重命名自定义板；重名会自动加序号 */
+  renamePalette: (id: string, name: string) => void;
   /** 删除自定义板；删的若正是当前板则切回默认板 */
   removeCustomPalette: (id: string) => void;
+}
+
+/**
+ * 智能辅助（M4）。
+ *
+ * 这些操作都是「算一批格子 → 一次性写进编辑层 → 记成一条撤销记录」，
+ * 与画笔走同一套记账路径，所以每一个都能 Ctrl+Z 撤销。
+ * 它们**改的是手改层**而不是底图：底图是转换参数的产物，改它下次调参就白改了。
+ */
+export interface AssistSlice {
+  /** 3×3 平铺预览（画布按九宫格重复绘制，看无缝效果） */
+  tilePreview: boolean;
+  setTilePreview: (v: boolean) => void;
+  /** 最近一次接缝检查结果；null = 还没检查过 */
+  seam: SeamReport | null;
+  setSeam: (report: SeamReport | null) => void;
+
+  runOutline: (opts: OutlineOptions) => void;
+  runShade: (opts: ShadeOptions) => void;
+  /** 检查平铺接缝，结果存进 `seam` 供画布标注 */
+  runSeamCheck: () => void;
 }
 
 export interface ToolSlice {
@@ -251,6 +277,7 @@ export type AppStore = SourceSlice &
   SettingsSlice &
   EditSlice &
   PaletteSlice &
+  AssistSlice &
   ToolSlice &
   UiSlice;
 
@@ -300,6 +327,34 @@ function saveCustomPalettes(customs: Record<string, Palette | undefined>): void 
 function nextCustomId(): string {
   paletteSeq += 1;
   return `custom-${Date.now().toString(36)}-${paletteSeq}`;
+}
+
+/**
+ * 在已有名字之外找一个不重名的。
+ *
+ * 重名不是纯粹的观感问题：下拉框里冒出两个「导入的调色板」时，用户根本分不清
+ * 哪块是哪块，删错一块就再也找不回来了。所以**任何登记入口都过一遍这里**。
+ * 序号用半角括号：中文全角括号太宽，在窄面板里会被截断。
+ */
+function uniqueName(base: string, taken: Iterable<string>): string {
+  const used = new Set(taken);
+  if (!used.has(base)) return base;
+  for (let n = 2; n < 1000; n += 1) {
+    const candidate = `${base} (${n})`;
+    if (!used.has(candidate)) return candidate;
+  }
+  return `${base} (${Date.now().toString(36)})`;
+}
+
+/** 剥掉「（已编辑）」与「 (2)」这类自动后缀，得到干净的基础名 */
+function stripEditSuffix(name: string): string {
+  let out = name;
+  for (let i = 0; i < 4; i += 1) {
+    const next = out.replace(/（已编辑）$/, '').replace(/ \(\d+\)$/, '');
+    if (next === out) break;
+    out = next;
+  }
+  return out.trim() || name;
 }
 
 /** 编辑层尺寸未变时返回原对象：拖参数滑块时每帧都会走到这里，克隆不起 */
@@ -527,7 +582,8 @@ const createPaletteSlice: StateCreator<AppStore, [], [], PaletteSlice> = (set, g
   const forkPalette = (p: Palette): Palette => ({
     ...p,
     id: nextCustomId(),
-    name: p.builtin ? `${p.name}（已编辑）` : p.name,
+    // 反复分叉时名字不该越滚越长（X（已编辑）（已编辑）…），所以先剥掉旧后缀
+    name: p.builtin ? `${stripEditSuffix(p.name)}（已编辑）` : p.name,
     builtin: false,
     source: 'custom',
   });
@@ -540,20 +596,28 @@ const createPaletteSlice: StateCreator<AppStore, [], [], PaletteSlice> = (set, g
 
   /** 落库一块自定义板并切过去 */
   const registerAndSelect = (palette: Palette, silent = false): void => {
-    const customs = { ...get().customPalettes, [palette.id]: palette };
-    saveCustomPalettes(customs);
+    // 重名先去重：内置板的名字也算「已占用」，否则自定义板会顶掉内置板的名字辨识度
+    const customs = get().customPalettes;
+    const name = uniqueName(palette.name, [
+      ...Object.values(customs).map((p) => p?.name ?? ''),
+      ...BUILTIN_PALETTES.map((p) => p.name),
+    ]);
+    const named = name === palette.name ? palette : { ...palette, name };
+
+    const next = { ...customs, [named.id]: named };
+    saveCustomPalettes(next);
     set((s) => ({
-      customPalettes: customs,
-      palette,
-      settings: { ...s.settings, paletteId: palette.id },
+      customPalettes: next,
+      palette: named,
+      settings: { ...s.settings, paletteId: named.id },
       // 新板可能更短，前景/背景索引要跟着夹住
-      foreground: Math.min(s.foreground, palette.colors.length - 1),
-      background: Math.min(s.background, palette.colors.length - 1),
+      foreground: Math.min(s.foreground, named.colors.length - 1),
+      background: Math.min(s.background, named.colors.length - 1),
     }));
     if (!silent) {
       get().pushToast(
         'info',
-        `已保存为自定义调色板「${palette.name}」（${palette.colors.length} 色）`,
+        `已保存为自定义调色板「${named.name}」（${named.colors.length} 色）`,
       );
     }
   };
@@ -669,6 +733,34 @@ const createPaletteSlice: StateCreator<AppStore, [], [], PaletteSlice> = (set, g
       });
     },
 
+    renamePalette: (id, rawName) => {
+      const state = get();
+      const target = state.customPalettes[id];
+      if (!target) return;
+
+      const trimmed = rawName.trim();
+      if (trimmed === '') return;
+      // 改名时要把「自己」从占用名单里排除，否则改回原名会被误判为重名
+      const name = uniqueName(trimmed, [
+        ...Object.values(state.customPalettes)
+          .filter((p) => p && p.id !== id)
+          .map((p) => p?.name ?? ''),
+        ...BUILTIN_PALETTES.map((p) => p.name),
+      ]);
+
+      const renamed: Palette = { ...target, name };
+      const customs = { ...state.customPalettes, [id]: renamed };
+      saveCustomPalettes(customs);
+      set({
+        customPalettes: customs,
+        // 改的正是当前板时，同步显示
+        palette: state.palette.id === id ? renamed : state.palette,
+      });
+      if (name !== trimmed) {
+        state.pushToast('info', `已有同名调色板，已重命名为「${name}」`);
+      }
+    },
+
     removeCustomPalette: (id) => {
       const state = get();
       if (!state.customPalettes[id]) return;
@@ -690,6 +782,78 @@ const createPaletteSlice: StateCreator<AppStore, [], [], PaletteSlice> = (set, g
         set({ customPalettes: customs });
       }
       state.pushToast('info', '已删除该自定义调色板');
+    },
+  };
+};
+
+const createAssistSlice: StateCreator<AppStore, [], [], AssistSlice> = (set, get) => {
+  /**
+   * 把一批待写入的格子落库成一次可撤销的操作。
+   * 描边 / 明暗分层 / 将来别的自动辅助都走这里，行为完全一致：
+   * 没有可改动的地方就只提示，不往撤销栈里塞空记录。
+   */
+  const applyWrites = (label: string, writes: readonly CellWrite[]): void => {
+    const layer = get().editLayer;
+    if (!layer) {
+      get().pushToast('warn', '还没有像素图，先用不了自动辅助');
+      return;
+    }
+    if (writes.length === 0) {
+      get().pushToast('info', `${label}：没有需要改动的地方`);
+      return;
+    }
+
+    const changes = new Map<number, PixelCell | null>();
+    applyEditWrites(layer, writes, changes);
+    const edits = changesToEdits(changes, layer);
+    if (edits.length === 0) {
+      get().pushToast('info', `${label}：这些格子已经符合目标状态`);
+      return;
+    }
+    get().commitEdits(label, edits);
+    get().pushToast('info', `${label}：已处理 ${edits.length} 格（可撤销）`);
+  };
+
+  return {
+    tilePreview: false,
+    setTilePreview: (tilePreview) => set({ tilePreview }),
+    seam: null,
+    setSeam: (seam) => set({ seam }),
+
+    runOutline: (opts) => {
+      const { baseGrid, editLayer } = get();
+      if (!baseGrid) {
+        get().pushToast('warn', '还没有像素图，先调一下转换参数');
+        return;
+      }
+      applyWrites('自动描边', planOutline(baseGrid, editLayer, opts));
+    },
+
+    runShade: (opts) => {
+      const { baseGrid, editLayer, palette } = get();
+      if (!baseGrid) {
+        get().pushToast('warn', '还没有像素图，先调一下转换参数');
+        return;
+      }
+      applyWrites('自动明暗分层', planShade(baseGrid, editLayer, palette, opts));
+    },
+
+    runSeamCheck: () => {
+      const { baseGrid, editLayer } = get();
+      if (!baseGrid) {
+        get().pushToast('warn', '还没有像素图，无从检查接缝');
+        return;
+      }
+      const report = checkSeams(baseGrid, editLayer);
+      set({ seam: report });
+      if (report.mismatches === 0) {
+        get().pushToast('info', `接缝检查通过：${report.total} 对边界全部对得上，可以无缝平铺`);
+      } else {
+        get().pushToast(
+          'warn',
+          `发现 ${report.mismatches} 处接缝不匹配（已在画布上标出），平铺时会出现可见的缝`,
+        );
+      }
     },
   };
 };
@@ -759,6 +923,7 @@ export const useApp = create<AppStore>()((...args) => ({
   ...createSettingsSlice(...args),
   ...createEditSlice(...args),
   ...createPaletteSlice(...args),
+  ...createAssistSlice(...args),
   ...createToolSlice(...args),
   ...createUiSlice(...args),
 }));

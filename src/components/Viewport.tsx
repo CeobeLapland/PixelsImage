@@ -90,6 +90,8 @@ export function Viewport({ source }: { source: SourceImage }): JSX.Element {
   const tool = useApp((s) => s.tool);
   const brushSize = useApp((s) => s.brushSize);
   const symmetry = useApp((s) => s.symmetry);
+  const tilePreview = useApp((s) => s.tilePreview);
+  const seam = useApp((s) => s.seam);
 
   const previewW = source.previewBitmap.width;
   const previewH = source.previewBitmap.height;
@@ -408,17 +410,36 @@ export function Viewport({ source }: { source: SourceImage }): JSX.Element {
     }
 
     /* ---- 共用视图：侧滑分割 / 仅结果 / 仅原图 ---- */
-    const dw = previewW * view.zoom;
-    const dh = previewH * view.zoom;
-    const x = view.panX;
-    const y = view.panY;
+    const tiling = mode === 'result' && tilePreview;
+    // 平铺预览时把所有几何量取整：非整数缩放下相邻两份之间会出现 1px 接缝，
+    // 而那正是这个预览想让你看见的东西，不能由渲染自己制造出来
+    const dw = tiling ? Math.max(1, Math.round(previewW * view.zoom)) : previewW * view.zoom;
+    const dh = tiling ? Math.max(1, Math.round(previewH * view.zoom)) : previewH * view.zoom;
+    const x = tiling ? Math.round(view.panX) : view.panX;
+    const y = tiling ? Math.round(view.panY) : view.panY;
 
-    drawChecker(ctx, x, y, dw, dh, cw, ch);
+    drawChecker(ctx, x - (tiling ? dw : 0), y - (tiling ? dh : 0), dw * (tiling ? 3 : 1), dh * (tiling ? 3 : 1), cw, ch);
 
     if (mode === 'result' && grid && pixel) {
       const cellSize = dw / grid.w;
       ctx.imageSmoothingEnabled = cellSize < 1;
       ctx.drawImage(pixel, x, y, dw, dh);
+
+      if (tiling) {
+        // 九宫格重复绘制 = 直接看平铺效果。中心那一份额外描一圈亮边，
+        // 否则九份长得一模一样，用户分不清哪一份是可编辑的
+        for (let ty = -1; ty <= 1; ty += 1) {
+          for (let tx = -1; tx <= 1; tx += 1) {
+            if (tx === 0 && ty === 0) continue;
+            ctx.drawImage(pixel, x + tx * dw, y + ty * dh, dw, dh);
+          }
+        }
+        ctx.save();
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = 'rgba(233,168,60,0.85)';
+        ctx.strokeRect(x - 1, y - 1, dw + 2, dh + 2);
+        ctx.restore();
+      }
     } else if (mode === 'split' && grid && pixel) {
       const splitX = splitPos * cw;
 
@@ -462,9 +483,9 @@ export function Viewport({ source }: { source: SourceImage }): JSX.Element {
       ctx.restore();
     }
 
-    // 图像边界
+    // 图像边界：平铺预览时它就是中心那一份的边界
     thinRect(ctx, x, y, dw, dh, 'rgba(124,140,162,0.45)');
-  }, [source, view, mode, splitPos, overlaySource, overlayOpacity, previewW, previewH, box.w, box.h, baseGrid, editLayer, palette, editVersion]);
+  }, [source, view, mode, splitPos, overlaySource, overlayOpacity, previewW, previewH, box.w, box.h, baseGrid, editLayer, palette, editVersion, tilePreview]);
 
   useEffect(renderBase, [renderBase]);
 
@@ -492,11 +513,14 @@ export function Viewport({ source }: { source: SourceImage }): JSX.Element {
 
     const store = useApp.getState();
     const zoom = store.view.zoom;
-    const x = store.view.panX;
-    const y = store.view.panY;
-    const dw = previewW * zoom;
-    const dh = previewH * zoom;
     const grid = store.baseGrid;
+    // 与像素层保持完全一致的几何量：平铺预览时两边都取整，
+    // 否则覆盖层的格网会比像素块偏半像素，看起来像没对齐
+    const tiling = store.compareMode === 'result' && store.tilePreview && grid !== null;
+    const dw = tiling ? Math.max(1, Math.round(previewW * zoom)) : previewW * zoom;
+    const dh = tiling ? Math.max(1, Math.round(previewH * zoom)) : previewH * zoom;
+    const x = tiling ? Math.round(store.view.panX) : store.view.panX;
+    const y = tiling ? Math.round(store.view.panY) : store.view.panY;
 
     /* ---- 网格线 ---- */
     if (store.showGrid) {
@@ -554,6 +578,16 @@ export function Viewport({ source }: { source: SourceImage }): JSX.Element {
       thinRect(ctx, x + r.x * cellW, y + r.y * cellH, r.w * cellW, r.h * cellH, ACCENT);
     }
 
+    /* ---- 接缝标记：检查结果里对不上的那几格 ---- */
+    const seamReport = store.seam;
+    if (seamReport && (seamReport.horizontal.length > 0 || seamReport.vertical.length > 0)) {
+      const marks = [...seamReport.horizontal, ...seamReport.vertical].map((i) => ({
+        x: i % grid.w,
+        y: Math.floor(i / grid.w),
+      }));
+      fillCells(ctx, marks, x, y, cellW, cellH, 'rgba(224,96,63,0.6)');
+    }
+
     /* ---- 笔刷光标 ---- */
     const hover = store.hover;
     const drawable = store.compareMode === 'result' || store.compareMode === 'split';
@@ -586,7 +620,7 @@ export function Viewport({ source }: { source: SourceImage }): JSX.Element {
 
   useEffect(() => {
     renderOverlayRef.current();
-  }, [showGrid, selection, tool, brushSize, symmetry, editVersion, view, mode, splitPos, baseGrid, editLayer]);
+  }, [showGrid, selection, tool, brushSize, symmetry, editVersion, view, mode, splitPos, baseGrid, editLayer, tilePreview, seam]);
 
   /* ------------------------------------------------------ 分割线拖拽 */
 

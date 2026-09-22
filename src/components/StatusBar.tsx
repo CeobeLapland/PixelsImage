@@ -113,7 +113,7 @@ export function StatusBar(): JSX.Element {
           <span className="status__sep" />
         </>
       )}
-      <span className="status__item">M3 · 调色板引擎</span>
+      <span className="status__item">M4 · 智能辅助</span>
     </footer>
   );
 }

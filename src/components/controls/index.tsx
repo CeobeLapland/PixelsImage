@@ -7,7 +7,7 @@
  *   这样「拖动时跟手、松手后变准」这件事只需要在控件层声明一次。
  */
 
-import { useRef, type JSX, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type JSX, type ReactNode } from 'react';
 
 import { useApp } from '@/state/store';
 
@@ -181,6 +181,62 @@ export function Select<T extends string>({
           </option>
         ))}
       </select>
+    </Field>
+  );
+}
+
+/* --------------------------------------------------------------- 文本输入 */
+
+interface TextFieldProps {
+  label: string;
+  value: string;
+  placeholder?: string;
+  disabled?: boolean;
+  /** 失焦或回车时提交；空串不提交 —— 否则一不留神就把名字清空了 */
+  onCommit: (v: string) => void;
+}
+
+export function TextField({
+  label,
+  value,
+  placeholder,
+  disabled,
+  onCommit,
+}: TextFieldProps): JSX.Element {
+  const [draft, setDraft] = useState(value);
+
+  // 外部值变化（例如切到了另一块调色板）时同步草稿
+  useEffect(() => setDraft(value), [value]);
+
+  const commit = () => {
+    const next = draft.trim();
+    if (next === '' || next === value) {
+      setDraft(value);
+      return;
+    }
+    onCommit(next);
+  };
+
+  return (
+    <Field label={label}>
+      <input
+        className="textfield__input"
+        type="text"
+        value={draft}
+        placeholder={placeholder}
+        disabled={disabled}
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={commit}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') {
+            event.currentTarget.blur();
+          } else if (event.key === 'Escape') {
+            // Esc 放弃修改：先还原草稿再失焦，避免 blur 又提交一次
+            setDraft(value);
+            event.currentTarget.blur();
+          }
+        }}
+      />
     </Field>
   );
 }

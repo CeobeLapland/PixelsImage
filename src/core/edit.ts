@@ -34,6 +34,18 @@ export interface CellEdit {
 }
 
 /**
+ * 一次待写入的格子（自动辅助与工具的统一产出物）：
+ * `cell === null` 表示撤销覆盖、该格重新走底层。
+ *
+ * 与工具「就地改 + 记账」不同，自动辅助是整批算完再一次性写入，
+ * 所以用「下标 + 目标值」的列表表达，由调用方统一 applyEditWrites 落库。
+ */
+export interface CellWrite {
+  index: number;
+  cell: PixelCell | null;
+}
+
+/**
  * 读取某格当前生效的值：编辑层优先，其次底层，都没有则为全透明。
  *
  * 编辑层与底层尺寸不一致时（尺寸刚改、编辑层还没重采样的瞬间）忽略编辑层：
@@ -72,6 +84,18 @@ export function writeCell(
   if (!changes.has(i)) changes.set(i, layer.cells[i] ?? null);
   // 复制一份：调用方常复用同一个对象（例如 TRANSPARENT_CELL）
   layer.cells[i] = cell === null ? null : { index: cell.index, alpha: cell.alpha };
+}
+
+/**
+ * 把一批待写入的格子落到编辑层，并记录改动前的值（供撤销栈使用）。
+ * 自动辅助（描边 / 明暗分层 / 去背清理）统一走这里，避免各写一遍记账逻辑。
+ */
+export function applyEditWrites(
+  layer: EditLayer,
+  writes: readonly CellWrite[],
+  changes: Changes,
+): void {
+  for (const w of writes) writeCell(layer, w.index, w.cell, changes);
 }
 
 /** 手工覆盖过的格子数（面板上的「手改 N 格」） */

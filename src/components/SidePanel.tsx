@@ -1,6 +1,7 @@
 import { useEffect, useRef, type JSX } from 'react';
 
 import { formatBytes } from '@/core/image';
+import { isPreprocessIdentity } from '@/core/preprocess';
 import { useApp } from '@/state/store';
 import { ComparePanel } from './ComparePanel';
 import { ConvertPanel } from './ConvertPanel';
@@ -9,6 +10,8 @@ import { ExtractPanel } from './ExtractPanel';
 import { LayerPanel } from './LayerPanel';
 import { PaletteIoPanel } from './PaletteIoPanel';
 import { PalettePanel } from './PalettePanel';
+import { PreprocessPanel } from './PreprocessPanel';
+import { AssistsPanel } from './AssistsPanel';
 import { Row, Section } from './Section';
 
 /* --------------------------------------------------------------- 源图缩略 */
@@ -46,8 +49,8 @@ const MILESTONES: { id: string; label: string; state: MileState }[] = [
   { id: 'M1', label: '转换引擎', state: 'done' },
   { id: 'M2', label: '像素编辑器', state: 'done' },
   { id: 'M3', label: '调色板引擎', state: 'done' },
-  { id: 'M4', label: '智能辅助', state: 'doing' },
-  { id: 'M5', label: '批量处理', state: 'todo' },
+  { id: 'M4', label: '智能辅助', state: 'done' },
+  { id: 'M5', label: '批量处理', state: 'doing' },
   { id: 'M6', label: '导出扩展', state: 'todo' },
   { id: 'M7', label: '打磨与存档', state: 'todo' },
 ];
@@ -63,6 +66,7 @@ export function SidePanel(): JSX.Element {
   const hasResult = useApp((s) => s.baseGrid !== null);
   const editedCount = useApp((s) => s.editedCount);
   const palette = useApp((s) => s.palette);
+  const preprocessActive = useApp((s) => !isPreprocessIdentity(s.settings.preprocess));
 
   const sourceBytes = source
     ? source.imageData.width * source.imageData.height * 4 +
@@ -129,6 +133,14 @@ export function SidePanel(): JSX.Element {
           <ComparePanel />
         </Section>
 
+        <Section title="预处理与去背" badge={preprocessActive ? <span className="badge">已启用</span> : undefined}>
+          <PreprocessPanel />
+        </Section>
+
+        <Section title="智能辅助" badge={editedCount > 0 ? <span className="badge">可撤销</span> : undefined}>
+          <AssistsPanel />
+        </Section>
+
         <Section title="导出" badge={hasResult ? <span className="badge">就绪</span> : undefined}>
           <ExportPanel />
         </Section>
@@ -154,8 +166,8 @@ export function SidePanel(): JSX.Element {
             ))}
           </ul>
           <p className="note">
-            当前处于 <b>M3</b>：调色板可提色、可导入导出、可逐槽改色、可一键全局换色。
-            像素编辑器（M2）与调色板引擎（M3）都已可用。
+            当前处于 <b>M4</b>：调色板引擎与智能辅助都已可用 ——
+            提色/导入导出/全局换色，加自动描边、明暗分层、去背与平铺接缝检查。
           </p>
         </Section>
       </div>

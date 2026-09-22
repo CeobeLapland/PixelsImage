@@ -189,6 +189,94 @@ describe('排序与合并', () => {
   });
 });
 
+describe('重命名与重名处理', () => {
+  it('新增同名调色板会自动加序号', () => {
+    useApp.getState().addCustomPalette(makePalette('x', [RED, BLUE]));
+    const first = useApp.getState().palette.name;
+    useApp.getState().addCustomPalette(makePalette('x', [RED, BLUE]));
+    const second = useApp.getState().palette.name;
+
+    expect(first).toBe('x');
+    expect(second).toBe('x (2)');
+  });
+
+  it('重命名生效', () => {
+    useApp.getState().addCustomPalette(makePalette('x', [RED, BLUE]));
+    const id = useApp.getState().palette.id;
+
+    useApp.getState().renamePalette(id, '  夕阳配色  ');
+
+    expect(useApp.getState().palette.name).toBe('夕阳配色');
+    expect(useApp.getState().customPalettes[id]?.name).toBe('夕阳配色');
+    expect(useApp.getState().toasts.some((t) => t.text.includes('重命名'))).toBe(false);
+  });
+
+  it('改成已存在的名字会被自动改号并提示', () => {
+    useApp.getState().addCustomPalette(makePalette('a', [RED, BLUE]));
+    const firstId = useApp.getState().palette.id;
+    useApp.getState().addCustomPalette(makePalette('b', [WHITE, BLACK]));
+    const secondId = useApp.getState().palette.id;
+
+    useApp.getState().renamePalette(secondId, 'a');
+
+    expect(useApp.getState().customPalettes[secondId]?.name).toBe('a (2)');
+    expect(useApp.getState().customPalettes[firstId]?.name).toBe('a');
+    expect(useApp.getState().toasts.some((t) => t.text.includes('已有同名调色板'))).toBe(true);
+  });
+
+  it('不能改成内置板已有的名字（防止认不出来哪块是内置板）', () => {
+    useApp.getState().addCustomPalette(makePalette('x', [RED, BLUE]));
+    const id = useApp.getState().palette.id;
+
+    useApp.getState().renamePalette(id, MC_DYE_PALETTE.name);
+
+    expect(useApp.getState().customPalettes[id]?.name).toBe(`${MC_DYE_PALETTE.name} (2)`);
+  });
+
+  it('改回自己的原名不会被当成重名', () => {
+    useApp.getState().addCustomPalette(makePalette('甲', [RED, BLUE]));
+    const id = useApp.getState().palette.id;
+    useApp.getState().renamePalette(id, '甲乙');
+
+    useApp.getState().renamePalette(id, '甲');
+    expect(useApp.getState().customPalettes[id]?.name).toBe('甲');
+  });
+
+  it('空名字被忽略，不会把板名清空', () => {
+    useApp.getState().addCustomPalette(makePalette('x', [RED, BLUE]));
+    const id = useApp.getState().palette.id;
+    useApp.getState().renamePalette(id, '   ');
+    expect(useApp.getState().customPalettes[id]?.name).toBe('x');
+  });
+
+  it('内置板不能重命名（没有对应的自定义板时静默忽略）', () => {
+    useApp.getState().renamePalette(MC_DYE_PALETTE.id, '乱改');
+    expect(useApp.getState().palette.name).toBe(MC_DYE_PALETTE.name);
+  });
+
+  it('反复分叉内置板不会滚出「（已编辑）（已编辑）」', () => {
+    useApp.getState().editPaletteColor(0, [1, 2, 3, 255] as unknown as RGBA);
+    expect(useApp.getState().palette.name).toBe(`${MC_DYE_PALETTE.name}（已编辑）`);
+
+    // 切回原版内置板再改一次
+    useApp.setState({ palette: MC_DYE_PALETTE });
+    useApp.getState().editPaletteColor(1, [4, 5, 6, 255] as unknown as RGBA);
+    expect(useApp.getState().palette.name).toBe(`${MC_DYE_PALETTE.name}（已编辑） (2)`);
+  });
+
+  it('重命名未在使用的板不影响当前板', () => {
+    useApp.getState().addCustomPalette(makePalette('a', [RED, BLUE]));
+    const firstId = useApp.getState().palette.id;
+    useApp.getState().addCustomPalette(makePalette('b', [WHITE, BLACK]));
+    const activeName = useApp.getState().palette.name;
+
+    useApp.getState().renamePalette(firstId, '改的是另一块');
+
+    expect(useApp.getState().palette.name).toBe(activeName);
+    expect(useApp.getState().customPalettes[firstId]?.name).toBe('改的是另一块');
+  });
+});
+
 describe('自定义板的注册与删除', () => {
   it('新增会切到新板并登记', () => {
     const custom = makePalette('x', [RED, BLUE]);

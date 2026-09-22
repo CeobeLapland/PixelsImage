@@ -5,6 +5,7 @@
  *   ① 亮度/对比度/饱和度 —— 逐像素的颜色调整
  *   ② 锐化               —— 需要邻域，必须在下采样前做，否则边缘已经糊掉了
  *   ③ alpha 阈值         —— 去背景要放在最后，否则调色时会把背景色也一起算进去
+ *   ④ 边缘色晕清理       —— 必须在阈值之后：它要靠「谁还是半透明」来判断边缘
  *
  * 全部返回新缓冲，不改动调用方的源数据（源图要能反复重算）。
  */
@@ -20,7 +21,8 @@ export function isPreprocessIdentity(p: PreprocessSettings): boolean {
     p.contrast === 0 &&
     p.saturation === 0 &&
     p.sharpen === 0 &&
-    p.alphaThreshold >= 255
+    p.alphaThreshold >= 255 &&
+    !p.decontaminate
   );
 }
 
@@ -134,6 +136,96 @@ function applyAlphaThreshold(data: Uint8ClampedArray, threshold: number): void {
 }
 
 /**
+ * 边缘色晕清理（color decontamination）。
+ *
+ * 问题：抠图或 α 阈值去背后，边缘那圈**半透明**像素的 RGB 里仍然混着原来的背景色
+ * （绿幕残留、白底灰边就是这么来的）。降到像素画尺寸时，这些混合色会变成一圈脏边，
+ * 而且它会被当成「真实颜色」参与量化，把调色板带偏。
+ *
+ * 做法：从贴着不透明像素的半透明像素出发，把不透明像素的颜色一层层「灌」进半透明边缘，
+ * 最多扩散 `rings` 圈。只改 RGB，不动 alpha —— 边缘的柔和过渡该保留还保留，
+ * 只是它通往的颜色换成了主体色。
+ *
+ * 超大图直接跳过：需要一个与像素数等长的标记数组（1600 万像素 = 16MB），
+ * 再大就不值得为边缘四圈像素付这份内存。跳过时行为等价于没开这个开关。
+ */
+const MAX_DECONTAMINATE_PIXELS = 16_000_000;
+/** 向外扩散的圈数，够覆盖常见的 1-3px 抗锯齿边缘 */
+const DECONTAMINATE_RINGS = 3;
+
+export function applyDecontaminate(
+  data: Uint8ClampedArray,
+  w: number,
+  h: number,
+  rings = DECONTAMINATE_RINGS,
+): number {
+  const total = w * h;
+  if (w <= 0 || h <= 0 || total > MAX_DECONTAMINATE_PIXELS) return 0;
+
+  const filled = new Uint8Array(total);
+  let frontier: number[] = [];
+
+  // 第一圈：紧贴不透明像素（alpha === 255）的半透明像素
+  for (let y = 0; y < h; y += 1) {
+    for (let x = 0; x < w; x += 1) {
+      const i = y * w + x;
+      const a = data[i * 4 + 3];
+      if (a === 0 || a === 255) continue;
+
+      const nx = [x - 1, x + 1, x, x];
+      const ny = [y, y, y - 1, y + 1];
+      for (let k = 0; k < 4; k += 1) {
+        const px = nx[k];
+        const py = ny[k];
+        if (px < 0 || py < 0 || px >= w || py >= h) continue;
+        const j = py * w + px;
+        if (data[j * 4 + 3] !== 255) continue;
+        data[i * 4] = data[j * 4];
+        data[i * 4 + 1] = data[j * 4 + 1];
+        data[i * 4 + 2] = data[j * 4 + 2];
+        filled[i] = 1;
+        frontier.push(i);
+        break;
+      }
+    }
+  }
+
+  let changed = frontier.length;
+
+  // 后续几圈：沿着半透明区域继续把颜色推出去
+  for (let ring = 1; ring < rings && frontier.length > 0; ring += 1) {
+    const next: number[] = [];
+    for (const i of frontier) {
+      const x = i % w;
+      const y = (i - x) / w;
+      const r = data[i * 4];
+      const g = data[i * 4 + 1];
+      const b = data[i * 4 + 2];
+
+      const nx = [x - 1, x + 1, x, x];
+      const ny = [y, y, y - 1, y + 1];
+      for (let k = 0; k < 4; k += 1) {
+        const px = nx[k];
+        const py = ny[k];
+        if (px < 0 || py < 0 || px >= w || py >= h) continue;
+        const j = py * w + px;
+        const a = data[j * 4 + 3];
+        if (a === 0 || a === 255 || filled[j] === 1) continue;
+        data[j * 4] = r;
+        data[j * 4 + 1] = g;
+        data[j * 4 + 2] = b;
+        filled[j] = 1;
+        next.push(j);
+      }
+    }
+    changed += next.length;
+    frontier = next;
+  }
+
+  return changed;
+}
+
+/**
  * 执行预处理。返回新缓冲；若设置全中性则原样返回输入的缓冲（不复制）。
  */
 export function preprocess(src: RGBAImage, p: PreprocessSettings): RGBAImageData {
@@ -151,6 +243,9 @@ export function preprocess(src: RGBAImage, p: PreprocessSettings): RGBAImageData
   }
   if (p.alphaThreshold < 255) {
     applyAlphaThreshold(data, Math.max(0, p.alphaThreshold));
+  }
+  if (p.decontaminate) {
+    applyDecontaminate(data, src.width, src.height);
   }
 
   return { width: src.width, height: src.height, data };

@@ -4,7 +4,7 @@ import { parseHex, toHex } from '@/core/color/space';
 import type { Palette, RGBA } from '@/core/types';
 import { BUILTIN_PALETTES } from '@/palettes/builtin';
 import { useApp } from '@/state/store';
-import { Field, Select, Toggle } from './controls';
+import { Field, Select, TextField, Toggle } from './controls';
 import { Row } from './Section';
 
 /**
@@ -31,6 +31,7 @@ export function PalettePanel(): JSX.Element {
   const sortPalette = useApp((s) => s.sortPalette);
   const mergePaletteColors = useApp((s) => s.mergePaletteColors);
   const addCustomPalette = useApp((s) => s.addCustomPalette);
+  const renamePalette = useApp((s) => s.renamePalette);
   const removeCustomPalette = useApp((s) => s.removeCustomPalette);
   const hasGrid = useApp((s) => s.baseGrid !== null);
 
@@ -213,13 +214,21 @@ export function PalettePanel(): JSX.Element {
         </button>
       </div>
       {isSaved && (
-        <button
-          type="button"
-          className="btn btn--block"
-          onClick={() => removeCustomPalette(palette.id)}
-        >
-          删除这块自定义板
-        </button>
+        <>
+          <TextField
+            label="板名"
+            value={palette.name}
+            placeholder="给这块板起个名字"
+            onCommit={(name) => renamePalette(palette.id, name)}
+          />
+          <button
+            type="button"
+            className="btn btn--block"
+            onClick={() => removeCustomPalette(palette.id)}
+          >
+            删除这块自定义板
+          </button>
+        </>
       )}
 
       <Row k="板内颜色" v={palette.colors.length} />
