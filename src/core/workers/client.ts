@@ -100,7 +100,8 @@ export class PipelineRunner {
 
     // 迟到的结果：源图已换或已被新请求取代，直接丢弃
     const stale = msg.id !== this.inflightId;
-    const palette = this.inflightPalette;
+    // k-means 限色模式下 Worker 会现生成一份调色板，以它为准
+    const palette = msg.palette ?? this.inflightPalette;
     this.inflightId = 0;
     this.inflightPalette = null;
 
@@ -142,7 +143,8 @@ export class PipelineRunner {
       this.onOutcome?.({
         sourceId: source.id,
         grid: result.grid,
-        palette: request.palette,
+        // 与 Worker 路径保持同一套口径：限色模式以现生成的调色板为准
+        palette: result.generatedPalette ?? request.palette,
         targetW: result.targetW,
         targetH: result.targetH,
         usedColors: result.usedColors,

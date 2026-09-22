@@ -87,6 +87,7 @@ ctx.onmessage = (event: MessageEvent<WorkerRequest>) => {
             usedColors: result.usedColors,
             trimmed: result.trimmed,
             ms,
+            palette: result.generatedPalette,
           },
           // 把结果缓冲转移回主线程，零拷贝
           [

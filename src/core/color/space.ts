@@ -103,3 +103,47 @@ export function toHexA(r: number, g: number, b: number, a: number): string {
   const v = ((r << 24) | (g << 16) | (b << 8) | a) >>> 0;
   return `#${v.toString(16).padStart(8, '0')}`;
 }
+
+/* ------------------------------------------------------------ 明度与色相 */
+
+/**
+ * 相对亮度 0-1（Rec.709 权重）。
+ *
+ * 用于「按明度排序调色板」与「只提取某个明度区间的颜色」。
+ * 刻意用线性权重而不是 CIELAB 的 L*：前者与「肉眼扫一眼觉得哪个更亮」基本一致，
+ * 且不需要为排序建整张 LAB 表。
+ */
+export function relativeLuminance(r: number, g: number, b: number): number {
+  return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+}
+
+/** HSL 饱和度 0-1 */
+export function saturationOf(r: number, g: number, b: number): number {
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  if (max === min) return 0;
+  const l = (max + min) / 510;
+  const d = (max - min) / 255;
+  return l > 0.5 ? d / (2 - max / 255 - min / 255) : d / (max / 255 + min / 255);
+}
+
+/**
+ * HSL 色相 0-360。
+ * 接近灰色的颜色（饱和度 < 0.08）没有有意义的色相，返回 -1 —— 排序时据此把它们挑出来，
+ * 否则灰色的色相由浮点噪声决定，排序结果会看起来毫无规律。
+ */
+export function hueOf(r: number, g: number, b: number): number {
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  if (max === min) return -1;
+
+  const d = max - min;
+  let h: number;
+  if (max === r) h = ((g - b) / d) % 6;
+  else if (max === g) h = (b - r) / d + 2;
+  else h = (r - g) / d + 4;
+
+  h *= 60;
+  if (h < 0) h += 360;
+  return saturationOf(r, g, b) < 0.08 ? -1 : h;
+}

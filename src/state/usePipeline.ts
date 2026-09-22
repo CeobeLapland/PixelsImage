@@ -55,10 +55,17 @@ export function usePipelineRunner(): void {
   useEffect(() => {
     if (!source || !sourceReady) return;
 
+    const state = useApp.getState();
+    // 自定义调色板（提色 / 导入 / 编辑过的板）必须优先于内置表查
+    const palette = resolvePalette(settings.paletteId, state.customPalettes);
+
     // 拖动控件时走快速模式（强制加权 RGB，跳过 CIELAB）；
     // 松手后 interacting 变回 false，这个 effect 会再跑一次完整精度
-    getPipelineRunner().request(settings, resolvePalette(settings.paletteId), interacting);
-    useApp.getState().setPalette(resolvePalette(settings.paletteId));
-    if (!interacting) useApp.getState().setConverting(true);
+    getPipelineRunner().request(settings, palette, interacting);
+
+    // 限色模式下调色板由 Worker 现算现回（见 pipeline.convert），
+    // 这里先置成"待生成"没有意义，还会让调色板面板闪一下旧的板
+    if (settings.quantize !== 'kmeans') state.setPalette(palette);
+    if (!interacting) state.setConverting(true);
   }, [settings, source, sourceReady, interacting]);
 }

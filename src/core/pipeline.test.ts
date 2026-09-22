@@ -46,6 +46,80 @@ describe('convert / 目标尺寸', () => {
   });
 });
 
+describe('convert / k-means 限色模式', () => {
+  const source = makeGradient(96, 72);
+
+  it('生成一块调色板并随结果返回', () => {
+    const result = convert(
+      source,
+      { ...makeDefaultSettings(), targetW: 32, quantize: 'kmeans', maxColors: 8, dither: 'none' },
+      MC_DYE_PALETTE,
+    );
+
+    expect(result.generatedPalette).toBeDefined();
+    expect(result.generatedPalette?.colors.length).toBeGreaterThan(0);
+    expect(result.generatedPalette?.colors.length).toBeLessThanOrEqual(8);
+  });
+
+  it('网格里的索引落在生成调色板的范围内', () => {
+    const result = convert(
+      source,
+      { ...makeDefaultSettings(), targetW: 32, quantize: 'kmeans', maxColors: 6, dither: 'none' },
+      MC_DYE_PALETTE,
+    );
+    const size = result.generatedPalette?.colors.length ?? 0;
+    for (const idx of result.grid.indices) {
+      expect(idx).toBeLessThan(size);
+    }
+  });
+
+  it('传入的调色板被忽略（限色模式下由图片决定颜色）', () => {
+    const settings = {
+      ...makeDefaultSettings(),
+      targetW: 24,
+      quantize: 'kmeans' as const,
+      maxColors: 4,
+    };
+    const a = convert(source, settings, MC_DYE_PALETTE);
+    const b = convert(source, settings, MONO_PALETTE);
+    expect(Array.from(a.grid.indices)).toEqual(Array.from(b.grid.indices));
+  });
+
+  it('结果确定：同一张图两次生成的调色板完全一致', () => {
+    const settings = {
+      ...makeDefaultSettings(),
+      targetW: 32,
+      quantize: 'kmeans' as const,
+      maxColors: 8,
+    };
+    const a = convert(source, settings, MC_DYE_PALETTE);
+    const b = convert(source, settings, MC_DYE_PALETTE);
+    expect(a.generatedPalette?.colors).toEqual(b.generatedPalette?.colors);
+  });
+
+  it('固定调色板模式不返回生成的板', () => {
+    const result = convert(source, makeDefaultSettings(), MC_DYE_PALETTE);
+    expect(result.generatedPalette).toBeUndefined();
+  });
+
+  it('限色模式也能配合抖动与裁剪跑通', () => {
+    const result = convert(
+      source,
+      {
+        ...makeDefaultSettings(),
+        targetW: 32,
+        quantize: 'kmeans',
+        maxColors: 4,
+        dither: 'atkinson',
+        trimTransparent: true,
+      },
+      MC_DYE_PALETTE,
+    );
+    expect(result.grid.w).toBeGreaterThan(0);
+    expect(result.usedColors).toBeGreaterThan(0);
+  });
+});
+
 describe('convert / 调色板切换（回归）', () => {
   /**
    * 这是浏览器实测抓到的崩溃的回归测试：

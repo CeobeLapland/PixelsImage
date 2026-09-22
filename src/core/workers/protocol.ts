@@ -38,5 +38,11 @@ export type WorkerResponse =
       usedColors: number;
       trimmed: boolean;
       ms: number;
+      /**
+       * k-means 限色模式下生成的调色板。
+       * 必须随结果回传：主线程事先不知道它会是什么色，但渲染和导出的每一格
+       * 都是按它取色的（见 docs/DESIGN.md 决策 13 的同一条理由）。
+       */
+      palette?: Palette;
     }
   | { type: 'error'; id: number; message: string };

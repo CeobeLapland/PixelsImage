@@ -21,7 +21,7 @@ export interface RGBAImage {
   readonly data: Uint8ClampedArray;
 }
 
-export type PaletteSource = 'builtin' | 'extracted' | 'imported';
+export type PaletteSource = 'builtin' | 'extracted' | 'imported' | 'custom';
 
 export interface Palette {
   id: string;

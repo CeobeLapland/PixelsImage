@@ -5,7 +5,9 @@ import { useApp } from '@/state/store';
 import { ComparePanel } from './ComparePanel';
 import { ConvertPanel } from './ConvertPanel';
 import { ExportPanel } from './ExportPanel';
+import { ExtractPanel } from './ExtractPanel';
 import { LayerPanel } from './LayerPanel';
+import { PaletteIoPanel } from './PaletteIoPanel';
 import { PalettePanel } from './PalettePanel';
 import { Row, Section } from './Section';
 
@@ -42,9 +44,9 @@ type MileState = 'done' | 'doing' | 'todo';
 const MILESTONES: { id: string; label: string; state: MileState }[] = [
   { id: 'M0', label: '工程骨架与导入', state: 'done' },
   { id: 'M1', label: '转换引擎', state: 'done' },
-  { id: 'M2', label: '像素编辑器', state: 'doing' },
-  { id: 'M3', label: '调色板引擎', state: 'todo' },
-  { id: 'M4', label: '智能辅助', state: 'todo' },
+  { id: 'M2', label: '像素编辑器', state: 'done' },
+  { id: 'M3', label: '调色板引擎', state: 'done' },
+  { id: 'M4', label: '智能辅助', state: 'doing' },
   { id: 'M5', label: '批量处理', state: 'todo' },
   { id: 'M6', label: '导出扩展', state: 'todo' },
   { id: 'M7', label: '打磨与存档', state: 'todo' },
@@ -60,6 +62,7 @@ export function SidePanel(): JSX.Element {
   const convertError = useApp((s) => s.convertError);
   const hasResult = useApp((s) => s.baseGrid !== null);
   const editedCount = useApp((s) => s.editedCount);
+  const palette = useApp((s) => s.palette);
 
   const sourceBytes = source
     ? source.imageData.width * source.imageData.height * 4 +
@@ -107,8 +110,19 @@ export function SidePanel(): JSX.Element {
           <LayerPanel />
         </Section>
 
-        <Section title="调色板" defaultOpen={false}>
+        <Section
+          title="调色板"
+          badge={<span className="badge">{palette.colors.length} 色</span>}
+        >
           <PalettePanel />
+        </Section>
+
+        <Section title="提取主色" defaultOpen={false}>
+          <ExtractPanel />
+        </Section>
+
+        <Section title="调色板文件" defaultOpen={false}>
+          <PaletteIoPanel />
         </Section>
 
         <Section title="对照与显示">
@@ -140,8 +154,8 @@ export function SidePanel(): JSX.Element {
             ))}
           </ul>
           <p className="note">
-            当前处于 <b>M2</b>：转换结果可以用工具栏里的八个工具手工微调，
-            手改存在独立的编辑层，调转换参数不会覆盖它。
+            当前处于 <b>M3</b>：调色板可提色、可导入导出、可逐槽改色、可一键全局换色。
+            像素编辑器（M2）与调色板引擎（M3）都已可用。
           </p>
         </Section>
       </div>

@@ -2,11 +2,12 @@ import type { JSX } from 'react';
 
 import { NumberField, Segmented, Slider, Toggle } from './controls';
 import { Row } from './Section';
-import { BUILTIN_PALETTES } from '@/palettes/builtin';
 import { useApp } from '@/state/store';
+import { BUILTIN_PALETTES } from '@/palettes/builtin';
 import type {
   DistanceMode,
   DitherMode,
+  QuantizeMode,
   SamplingMode,
 } from '@/core/types';
 
@@ -18,6 +19,19 @@ const SAMPLING_OPTIONS: readonly { value: SamplingMode; label: string; title: st
   { value: 'nearest', label: '最近邻', title: '取块中心像素。源图本身就是像素画时用，保留硬边缘' },
   { value: 'dominant', label: '主色投票', title: '块内直方图投票取主色。色块感强，不产生原图没有的混合色' },
   { value: 'median', label: '中位数', title: '块内各通道取中位数。抗噪点、抗单点高光' },
+];
+
+const QUANTIZE_OPTIONS: readonly { value: QuantizeMode; label: string; title: string }[] = [
+  {
+    value: 'palette',
+    label: '固定调色板',
+    title: '把颜色映射到「调色板」面板里选中的那块板。可控、可复现，也是手改的基础',
+  },
+  {
+    value: 'kmeans',
+    label: 'k-means 限色',
+    title: '从图片现场聚出 N 个代表色当调色板。适合「不知道用什么板，先看看这张图本来长什么样」',
+  },
 ];
 
 const DISTANCE_OPTIONS: readonly { value: DistanceMode; label: string; title: string }[] = [
@@ -40,6 +54,8 @@ export function ConvertPanel(): JSX.Element {
   const settings = useApp((s) => s.settings);
   const patchSettings = useApp((s) => s.patchSettings);
   const source = useApp((s) => s.source);
+  const palette = useApp((s) => s.palette);
+  const customCount = useApp((s) => Object.keys(s.customPalettes).length);
 
   const autoHeight =
     source && settings.targetH === 'auto'
@@ -143,6 +159,33 @@ export function ConvertPanel(): JSX.Element {
       </div>
 
       <div className="section__body">
+        <Segmented
+          label="颜色来源"
+          value={settings.quantize}
+          options={QUANTIZE_OPTIONS}
+          columns={2}
+          onChange={(v) => patchSettings({ quantize: v })}
+        />
+        {settings.quantize === 'palette' ? (
+          <Row k="当前调色板" v={palette.name} />
+        ) : (
+          <>
+            <Slider
+              label="限色数量"
+              value={settings.maxColors}
+              min={2}
+              max={64}
+              onChange={(v) => patchSettings({ maxColors: v })}
+            />
+            <p className="note">
+              调色板由这张图现场聚出来，已经显示在「调色板」面板里 ——
+              想固定下来复用，点那里的「存为自定义板」。
+            </p>
+          </>
+        )}
+      </div>
+
+      <div className="section__body">
         <Toggle
           label="pixelPerfect（每格权重一致）"
           value={settings.pixelPerfect}
@@ -156,9 +199,9 @@ export function ConvertPanel(): JSX.Element {
           onChange={(v) => patchSettings({ trimTransparent: v })}
         />
         <p className="note">
-          当前调色板共 <b>{BUILTIN_PALETTES.length}</b> 个内置可选，
-          内含 <b>{BUILTIN_PALETTES[0]?.colors.length ?? 0}</b> 色的 Minecraft 染料板。
-          自定义调色板与提色在 M3。
+          「调色板」面板里共有 <b>{BUILTIN_PALETTES.length}</b> 块内置板
+          {customCount > 0 ? ` 与你保存的 ${customCount} 块自定义板` : ''}
+          ，另有从图片提取主色、导入 .hex/.gpl 两条路。
         </p>
       </div>
     </>

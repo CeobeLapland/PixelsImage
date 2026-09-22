@@ -303,6 +303,61 @@
   line-height: 1.3;
 }
 
+/* 正在编辑的色槽：虚线外圈，与「前景色」的实线环区分开 */
+.swatch[data-editing='true'] {
+  box-shadow: 0 0 0 2px var(--ink), inset 0 0 0 1px rgba(0, 0, 0, 0.5);
+}
+
+/* 提色结果预览：不可交互，只用来先看一眼 */
+.swatch--static {
+  cursor: default;
+}
+
+.swatch--static:hover {
+  transform: none;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+}
+
+.swatches--preview {
+  margin-top: 10px;
+  padding: 6px;
+  border: 1px dashed var(--line);
+  border-radius: var(--r-sm);
+}
+
+/* ------------------------------------------------------------ 取色器 */
+
+.colorpicker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.colorpicker__input {
+  flex: none;
+  width: 42px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg-inset);
+  cursor: pointer;
+}
+
+.colorpicker__hint {
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: var(--ink-faint);
+}
+
+/* ------------------------------------------------------------ 双滑块 */
+
+.dualrange {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
 /* ------------------------------------------------------------ 当前色槽 */
 
 .colorslot {

@@ -16,9 +16,10 @@
 
 import { create, type StateCreator } from 'zustand';
 
-import { applyCellEdits, cloneEditLayer, countEdits, resampleEditLayer, type CellEdit } from '@/core/edit';
+import { applyCellEdits, changesToEdits, cloneEditLayer, countEdits, resampleEditLayer, writeCell, type CellEdit } from '@/core/edit';
 import { isProbablyImage, loadSourceImage } from '@/core/image';
 import { DEFAULT_PALETTE_ID, resolvePalette } from '@/palettes/builtin';
+import { mergeSimilarColors, remapEditLayer, remapGridIndices, sortColors, type SortKey } from '@/palettes/ops';
 import {
   createEditLayer,
   makeDefaultSettings,
@@ -29,6 +30,7 @@ import {
   type PixelDocument,
   type EditLayer,
   type PixelGrid,
+  type RGBA,
   type Rect,
   type SourceImage,
   type SymmetryMode,
@@ -164,6 +166,34 @@ export interface EditSlice {
   redo: () => void;
 }
 
+/**
+ * 调色板引擎（M3）。
+ *
+ * 三类操作的区别很关键：
+ * - **全局换色**：改写格子（写进编辑层）→ 进撤销栈、可持久；
+ * - **改色 / 排序 / 合并**：改的是调色板本身 → 不入撤销栈（与转换参数同理），
+ *   但要**同步重映射索引**，否则底图与编辑层会指错槽位；
+ * - **内置板只读**：任何要改颜色的操作都先分叉成一份自定义板，
+ *   避免污染共享的内置数据（否则两块画布会互相串味）。
+ */
+export interface PaletteSlice {
+  /** 自定义调色板（提色 / 导入 / 编辑内置板的产物），持久化在 localStorage */
+  customPalettes: Record<string, Palette | undefined>;
+
+  /** 把全图中索引为 `from` 的格子改成 `to`；写进编辑层，可撤销 */
+  replaceColor: (from: number, to: number) => void;
+  /** 改某一槽的颜色；改内置板会先分叉出一份自定义板 */
+  editPaletteColor: (index: number, color: RGBA) => void;
+  /** 排序调色板（分叉内置板 + 重映射索引） */
+  sortPalette: (key: SortKey) => void;
+  /** 合并近似色（分叉内置板 + 重映射索引） */
+  mergePaletteColors: (tolerance: number) => void;
+  /** 新增一块自定义板并切过去 */
+  addCustomPalette: (palette: Palette) => void;
+  /** 删除自定义板；删的若正是当前板则切回默认板 */
+  removeCustomPalette: (id: string) => void;
+}
+
 export interface ToolSlice {
   tool: ToolId;
   brushSize: number;
@@ -220,6 +250,7 @@ export type AppStore = SourceSlice &
   ConvertSlice &
   SettingsSlice &
   EditSlice &
+  PaletteSlice &
   ToolSlice &
   UiSlice;
 
@@ -227,8 +258,49 @@ export type AppStore = SourceSlice &
 
 const TOAST_TTL = 6000;
 let toastSeq = 0;
+let paletteSeq = 0;
 
 const IDENTITY_VIEW: ViewTransform = { zoom: 1, panX: 0, panY: 0 };
+
+/** 自定义调色板的持久化键。带版本号：将来结构变了可以另起一个键，不必写迁移代码 */
+const PALETTE_STORAGE_KEY = 'pixelsimage.palettes.v1';
+
+function loadCustomPalettes(): Record<string, Palette | undefined> {
+  try {
+    // 测试跑在 node 里，没有 localStorage；这里必须容错而不是依赖调用方判断
+    if (typeof localStorage === 'undefined') return {};
+    const raw = localStorage.getItem(PALETTE_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return {};
+    const out: Record<string, Palette | undefined> = {};
+    for (const [id, value] of Object.entries(parsed as Record<string, unknown>)) {
+      const p = value as Palette;
+      // 存进去的数据可能是旧版本或被手改过，形状不对就整条丢掉
+      if (p && typeof p.id === 'string' && Array.isArray(p.colors) && p.colors.length > 0) {
+        out[id] = { ...p, builtin: false, source: p.source ?? 'custom' };
+      }
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function saveCustomPalettes(customs: Record<string, Palette | undefined>): void {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem(PALETTE_STORAGE_KEY, JSON.stringify(customs));
+  } catch {
+    // 隐私模式或配额满：存不下就算了，绝不让持久化失败影响当前操作
+  }
+}
+
+/** 新建一块自定义板的 id */
+function nextCustomId(): string {
+  paletteSeq += 1;
+  return `custom-${Date.now().toString(36)}-${paletteSeq}`;
+}
 
 /** 编辑层尺寸未变时返回原对象：拖参数滑块时每帧都会走到这里，克隆不起 */
 function layerForSize(
@@ -313,6 +385,8 @@ const createConvertSlice: StateCreator<AppStore, [], [], ConvertSlice> = (set, g
     const nextLayer = sizeChanged
       ? layerForSize(previous, get().editOrigin, grid.w, grid.h)
       : previous;
+    // 限色模式回传的板可能比上一块短，前景/背景索引要跟着夹住
+    const lastColor = Math.max(0, palette.colors.length - 1);
 
     set({
       baseGrid: grid,
@@ -325,6 +399,8 @@ const createConvertSlice: StateCreator<AppStore, [], [], ConvertSlice> = (set, g
       // 尺寸变了选区就没意义了
       selection: sizeChanged ? null : get().selection,
       editVersion: get().editVersion + 1,
+      foreground: Math.min(get().foreground, lastColor),
+      background: Math.min(get().background, lastColor),
     });
 
     if (sizeChanged && edits > 0) {
@@ -446,6 +522,178 @@ const createEditSlice: StateCreator<AppStore, [], [], EditSlice> = (set, get) =>
   },
 });
 
+const createPaletteSlice: StateCreator<AppStore, [], [], PaletteSlice> = (set, get) => {
+  /** 把一块板复制成可写的新自定义板（内置板是共享常量，绝不能就地改） */
+  const forkPalette = (p: Palette): Palette => ({
+    ...p,
+    id: nextCustomId(),
+    name: p.builtin ? `${p.name}（已编辑）` : p.name,
+    builtin: false,
+    source: 'custom',
+  });
+
+  /** 拿到一块「可写」的调色板：内置板先分叉 */
+  const writable = (): Palette => {
+    const current = get().palette;
+    return current.builtin ? forkPalette(current) : current;
+  };
+
+  /** 落库一块自定义板并切过去 */
+  const registerAndSelect = (palette: Palette, silent = false): void => {
+    const customs = { ...get().customPalettes, [palette.id]: palette };
+    saveCustomPalettes(customs);
+    set((s) => ({
+      customPalettes: customs,
+      palette,
+      settings: { ...s.settings, paletteId: palette.id },
+      // 新板可能更短，前景/背景索引要跟着夹住
+      foreground: Math.min(s.foreground, palette.colors.length - 1),
+      background: Math.min(s.background, palette.colors.length - 1),
+    }));
+    if (!silent) {
+      get().pushToast(
+        'info',
+        `已保存为自定义调色板「${palette.name}」（${palette.colors.length} 色）`,
+      );
+    }
+  };
+
+  /** 落库一次调色板变更；`forked` 表示它是一块刚分叉出来的新板 */
+  const commitPalette = (palette: Palette, forked: boolean, note?: string): void => {
+    if (forked) {
+      registerAndSelect(palette, true);
+    } else {
+      const customs = { ...get().customPalettes, [palette.id]: palette };
+      saveCustomPalettes(customs);
+      set({ customPalettes: customs, palette });
+    }
+    if (note) get().pushToast('info', note);
+  };
+
+  /**
+   * 排序 / 合并这类会改变槽位顺序的操作：必须把底图与编辑层一起重映射。
+   * 底图的改写是「临时」的（下次转换会按新调色板重算）；
+   * 编辑层的改写是「永久」的 —— 漏掉它画面看起来正常，但手改的格子会突然变色。
+   */
+  const applyRemap = (colors: RGBA[], map: readonly number[], note: string): void => {
+    const state = get();
+    const base = state.baseGrid;
+    const layer = state.editLayer;
+    if (base) remapGridIndices(base, map);
+    if (layer) remapEditLayer(layer, map);
+
+    const target = writable();
+    commitPalette({ ...target, colors }, target !== state.palette, note);
+    // 渲染走 store.palette + 网格，两者都变了，必须让画布重绘
+    set((s) => ({ editVersion: s.editVersion + 1 }));
+  };
+
+  return {
+    customPalettes: loadCustomPalettes(),
+
+    replaceColor: (from, to) => {
+      const state = get();
+      const base = state.baseGrid;
+      const layer = state.editLayer;
+      if (!base || !layer) {
+        state.pushToast('warn', '还没有像素图，无法换色');
+        return;
+      }
+      if (from === to) return;
+
+      const changes = new Map<number, PixelCell | null>();
+      for (let i = 0; i < base.indices.length; i += 1) {
+        const cell = layer.cells[i] ?? null;
+        const index = cell ? cell.index : base.indices[i];
+        const alpha = cell ? cell.alpha : base.alpha[i];
+        if (index !== from) continue;
+        // 写进编辑层而不是改底图：底图下次转换就会被重算冲掉，
+        // 而编辑层是持久的，并且天然走撤销栈
+        writeCell(layer, i, { index: to, alpha }, changes);
+      }
+
+      const edits = changesToEdits(changes, layer);
+      if (edits.length === 0) {
+        state.pushToast('info', `图里没有用到 #${from} 的格子`);
+        return;
+      }
+      state.commitEdits(`换色 #${from} → #${to}`, edits);
+      state.pushToast('info', `已把 ${edits.length} 格从 #${from} 换成 #${to}（可撤销）`);
+    },
+
+    editPaletteColor: (index, color) => {
+      const current = get().palette;
+      if (index < 0 || index >= current.colors.length) return;
+
+      const target = writable();
+      const colors = target.colors.slice();
+      colors[index] = color;
+      // 改色不改变任何索引的含义，所以不需要重映射
+      commitPalette({ ...target, colors }, target !== current);
+      set((s) => ({ editVersion: s.editVersion + 1 }));
+    },
+
+    sortPalette: (key) => {
+      const state = get();
+      const { colors, map } = sortColors(state.palette.colors, key);
+      applyRemap(
+        colors,
+        map,
+        `调色板已按${key === 'luminance' ? '明度' : '色相'}排序${state.palette.builtin ? '（已生成自定义板）' : ''}`,
+      );
+    },
+
+    mergePaletteColors: (tolerance) => {
+      const state = get();
+      const before = state.palette.colors.length;
+      const { colors, map } = mergeSimilarColors(state.palette.colors, tolerance);
+      const merged = before - colors.length;
+      if (merged <= 0) {
+        state.pushToast('info', '没有距离在容差内的颜色可合并，试试调大容差');
+        return;
+      }
+      applyRemap(
+        colors,
+        map,
+        `已合并 ${merged} 个近似色，调色板 ${before} → ${colors.length} 色`,
+      );
+    },
+
+    addCustomPalette: (palette) => {
+      // 一定换新 id：提色结果是按参数命名的（kmeans-16），直接沿用会互相覆盖
+      registerAndSelect({
+        ...palette,
+        id: nextCustomId(),
+        builtin: false,
+        source: palette.source ?? 'custom',
+      });
+    },
+
+    removeCustomPalette: (id) => {
+      const state = get();
+      if (!state.customPalettes[id]) return;
+      const customs = { ...state.customPalettes };
+      delete customs[id];
+      saveCustomPalettes(customs);
+
+      // 正在用这块板：切回默认板，否则界面会拿着一个悬空 id 渲染
+      if (state.settings.paletteId === id) {
+        const fallback = resolvePalette(DEFAULT_PALETTE_ID);
+        set((s) => ({
+          customPalettes: customs,
+          palette: fallback,
+          settings: { ...s.settings, paletteId: fallback.id },
+          foreground: Math.min(s.foreground, fallback.colors.length - 1),
+          background: Math.min(s.background, fallback.colors.length - 1),
+        }));
+      } else {
+        set({ customPalettes: customs });
+      }
+      state.pushToast('info', '已删除该自定义调色板');
+    },
+  };
+};
+
 const createToolSlice: StateCreator<AppStore, [], [], ToolSlice> = (set) => ({
   tool: 'pencil',
   brushSize: 1,
@@ -510,6 +758,7 @@ export const useApp = create<AppStore>()((...args) => ({
   ...createConvertSlice(...args),
   ...createSettingsSlice(...args),
   ...createEditSlice(...args),
+  ...createPaletteSlice(...args),
   ...createToolSlice(...args),
   ...createUiSlice(...args),
 }));
