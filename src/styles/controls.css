@@ -720,3 +720,47 @@
   background: rgba(224, 96, 63, 0.14);
   color: var(--danger);
 }
+
+/* ============================================================================
+   导出：方块映射表（M6）
+   ========================================================================== */
+
+.blockmap {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 8px 0 6px;
+  max-height: 220px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.blockmap__row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.blockmap__chip {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 2px;
+  border: 1px solid rgba(0, 0, 0, 0.5);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+.blockmap__hex {
+  flex: none;
+  width: 62px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--ink-faint);
+}
+
+.blockmap__select {
+  flex: 1;
+  min-width: 0;
+  height: 24px;
+  font-size: 11px;
+}

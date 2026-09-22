@@ -16,7 +16,7 @@
 
 import { create, type StateCreator } from 'zustand';
 
-import { DEFAULT_NAME_TEMPLATE } from '@/core/batch/naming';
+import { DEFAULT_NAME_TEMPLATE, buildBatchNames } from '@/core/batch/naming';
 import {
   parsePresets,
   serializePresets,
@@ -34,6 +34,7 @@ import {
   summarize,
   type BatchItem,
 } from '@/core/batch/queue';
+import { createZip, type ZipEntry } from '@/core/batch/zip';
 import { applyCellEdits, applyEditWrites, changesToEdits, cloneEditLayer, countEdits, resampleEditLayer, writeCell, type CellEdit, type CellWrite } from '@/core/edit';
 import { composite } from '@/core/composite';
 import { countUsedColors } from '@/core/color/quantize';
@@ -41,7 +42,20 @@ import { decodeImage, isProbablyImage, loadSourceImage, makeThumbnail } from '@/
 import { checkSeams, type SeamReport } from '@/core/assists/tile';
 import { countSolidCells, planOutline, type OutlineOptions } from '@/core/assists/outline';
 import { planShade, type ShadeOptions } from '@/core/assists/shade';
-import { downloadBlob } from '@/core/exporters/png';
+import { copyPngToClipboard, copyTextToClipboard } from '@/core/exporters/clipboard';
+import { sanitizeBlockMap, suggestBlockMap, type BlockMap } from '@/core/exporters/blocks';
+import { downloadBlob, exportGridPng } from '@/core/exporters/png';
+import {
+  DEFAULT_EXPORTER_ID,
+  getExporter,
+  mergeOptionValues,
+  numOf,
+  paletteHexText,
+  stemOf,
+  strOf,
+  type ExportContext,
+  type ExportOptionValues,
+} from '@/core/exporters/registry';
 import { BUILTIN_PALETTES, DEFAULT_PALETTE_ID, resolvePalette } from '@/palettes/builtin';
 import { mergeSimilarColors, remapEditLayer, remapGridIndices, sortColors, type SortKey } from '@/palettes/ops';
 import { buildBatchZip, getBatchConverter } from './batch';
@@ -308,6 +322,40 @@ export interface BatchSlice {
   removeBatchPreset: (id: string) => void;
 }
 
+/**
+ * 导出（M6）。
+ *
+ * 选项值按导出器 id 分开存：切来切去不会互相覆盖（图集的「每行几格」
+ * 和蓝图的「每格像素」是两个完全不同的概念）。
+ * 选项的**定义**在 core/exporters/registry.ts 的 schema 里，这里只存值 ——
+ * 于是「面板限制 1–64 而导出器按 1–32 处理」这种对不上的情况不可能发生。
+ */
+export interface ExportSlice {
+  exporting: boolean;
+  /** 当前选中的导出器 id */
+  exporterId: string;
+  /** 各导出器的选项值，键是导出器 id */
+  exportOptions: Record<string, ExportOptionValues | undefined>;
+  /** 多文件产出是否打成一个 zip（分页蓝图一导就是好几张，逐个下载会被浏览器拦） */
+  exportPackZip: boolean;
+  /** 调色板颜色（RRGGBB 大写）→ 方块 id 的用户覆盖 */
+  blockMap: BlockMap;
+  /** 导出完成后最近一次的说明文字，显示在按钮下方 */
+  lastExportNote: string | null;
+
+  setExporter: (id: string) => void;
+  patchExportOptions: (patch: ExportOptionValues) => void;
+  setExportPackZip: (v: boolean) => void;
+  /** 改某个颜色对应的方块 */
+  setBlockFor: (colorKey: string, blockId: string) => void;
+  /** 全部退回「自动挑最接近的方块」 */
+  resetBlockMap: () => void;
+  runExport: () => Promise<void>;
+  /** 把当前像素图（按 PNG 导出器的倍数/底色设置）复制到剪贴板 */
+  copyPngAsImage: () => Promise<void>;
+  copyPaletteText: () => Promise<void>;
+}
+
 export interface ToolSlice {
   tool: ToolId;
   brushSize: number;
@@ -367,6 +415,7 @@ export type AppStore = SourceSlice &
   PaletteSlice &
   AssistSlice &
   BatchSlice &
+  ExportSlice &
   ToolSlice &
   UiSlice;
 
@@ -439,6 +488,43 @@ function saveBatchPresets(presets: readonly BatchPreset[]): void {
     localStorage.setItem(BATCH_PRESET_STORAGE_KEY, serializePresets(presets));
   } catch {
     // 存不下就算了，绝不让持久化失败影响当前操作（与调色板同一策略）
+  }
+}
+
+/**
+ * 导出设置的持久化。
+ *
+ * 方块映射表尤其需要存：那是用户一个个挑出来的手工结果，
+ * 刷新一次就没了的话，没人愿意去配第二遍。
+ */
+const EXPORT_STORAGE_KEY = 'pixelsimage.export.v1';
+
+interface StoredExportSettings {
+  exporterId?: string;
+  options?: Record<string, ExportOptionValues | undefined>;
+  packZip?: boolean;
+  blockMap?: Record<string, unknown>;
+}
+
+function loadExportSettings(): StoredExportSettings {
+  try {
+    if (typeof localStorage === 'undefined') return {};
+    const raw = localStorage.getItem(EXPORT_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return {};
+    return parsed as StoredExportSettings;
+  } catch {
+    return {};
+  }
+}
+
+function saveExportSettings(settings: StoredExportSettings): void {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem(EXPORT_STORAGE_KEY, JSON.stringify(settings));
+  } catch {
+    // 同上：存不下不影响当前操作
   }
 }
 
@@ -1326,6 +1412,195 @@ const createBatchSlice: StateCreator<AppStore, [], [], BatchSlice> = (set, get) 
   },
 });
 
+const createExportSlice: StateCreator<AppStore, [], [], ExportSlice> = (set, get) => {
+  const stored = loadExportSettings();
+
+  /** 落库一次导出设置；调用方只传要改的字段 */
+  const persist = (patch: Partial<StoredExportSettings>): void => {
+    const state = get();
+    saveExportSettings({
+      exporterId: state.exporterId,
+      options: state.exportOptions,
+      packZip: state.exportPackZip,
+      blockMap: state.blockMap,
+      ...patch,
+    });
+  };
+
+  /**
+   * 组装导出上下文。
+   *
+   * `grid` 取的是**合成结果**（与单图导出同一口径）：手改必须进图纸，
+   * 否则用户在编辑器里改了半天，导出的蓝图还是原样。
+   */
+  const buildContext = (): ExportContext => {
+    const state = get();
+    const grid = state.baseGrid ? composite(state.baseGrid, state.editLayer) : null;
+
+    // 图集的帧名沿用批量那边的命名模板：用户已经为这批图定过名字了，
+    // 图集里再另起一套规则只会让他重新对一遍
+    const done = state.batchItems.filter((i) => i.status === 'done' && i.result);
+    const sheetNames = buildBatchNames(
+      state.batchTemplate,
+      done.map((i) => ({
+        name: i.fileName,
+        w: i.result?.grid.w ?? 0,
+        h: i.result?.grid.h ?? 0,
+      })),
+      1,
+    );
+    const batchTiles = done.map((item, i) => ({
+      grid: item.result?.grid as PixelGrid,
+      palette: item.result?.palette ?? state.palette,
+      // 去掉 .png 后缀：manifest 里写的是「帧名」，不是文件名
+      name: (sheetNames[i] ?? item.fileName).replace(/\.png$/i, ''),
+    }));
+
+    return {
+      grid,
+      palette: state.palette,
+      sourceName: state.source?.name ?? 'pixels',
+      batchTiles,
+      blockMap: state.blockMap,
+      suggestedBlocks: suggestBlockMap(state.palette.colors),
+    };
+  };
+
+  return {
+    exporting: false,
+    exporterId: stored.exporterId ?? DEFAULT_EXPORTER_ID,
+    exportOptions: stored.options ?? {},
+    exportPackZip: stored.packZip ?? true,
+    blockMap: sanitizeBlockMap(stored.blockMap),
+    lastExportNote: null,
+
+    setExporter: (exporterId) => {
+      set({ exporterId, lastExportNote: null });
+      persist({ exporterId });
+    },
+
+    patchExportOptions: (patch) => {
+      const state = get();
+      const next = {
+        ...state.exportOptions,
+        [state.exporterId]: { ...state.exportOptions[state.exporterId], ...patch },
+      };
+      set({ exportOptions: next });
+      persist({ options: next });
+    },
+
+    setExportPackZip: (exportPackZip) => {
+      set({ exportPackZip });
+      persist({ packZip: exportPackZip });
+    },
+
+    setBlockFor: (key, blockId) => {
+      const blockMap = { ...get().blockMap, [key]: blockId };
+      set({ blockMap });
+      persist({ blockMap });
+    },
+
+    resetBlockMap: () => {
+      set({ blockMap: {} });
+      persist({ blockMap: {} });
+      get().pushToast('info', '方块映射已全部退回「自动挑最接近的方块」');
+    },
+
+    runExport: async () => {
+      const exporter = getExporter(get().exporterId);
+      if (!exporter) {
+        get().pushToast('error', '找不到这个导出器');
+        return;
+      }
+      if (exporter.needs === 'grid' && !get().baseGrid) {
+        get().pushToast('warn', '还没有转换结果，先调一下转换参数');
+        return;
+      }
+      if (exporter.needs === 'batch') {
+        const ready = get().batchItems.some((i) => i.status === 'done' && i.result);
+        if (!ready) {
+          get().pushToast('warn', '先去「批量处理」跑一轮，图集要用队列里已完成的图');
+          return;
+        }
+      }
+
+      set({ exporting: true });
+      try {
+        const values = mergeOptionValues(exporter, get().exportOptions[exporter.id]);
+        const result = await exporter.run(buildContext(), values);
+
+        if (result.files.length === 0) {
+          throw new Error('这个导出器没有产出任何文件');
+        }
+
+        if (result.files.length === 1 || !get().exportPackZip) {
+          // 逐个下载：多个文件时浏览器可能弹「允许多个下载」，这是正常提示
+          for (const file of result.files) {
+            downloadBlob(file.blob, file.name);
+            // 连续触发多次下载之间留一点间隔，太密集会被浏览器直接丢弃
+            if (result.files.length > 1) await new Promise((r) => setTimeout(r, 120));
+          }
+        } else {
+          const entries: ZipEntry[] = [];
+          for (const file of result.files) {
+            entries.push({ name: file.name, data: new Uint8Array(await file.blob.arrayBuffer()) });
+          }
+          const zip = createZip(entries);
+          downloadBlob(
+            new Blob([zip.slice().buffer as ArrayBuffer], { type: 'application/zip' }),
+            `${stemOf(get().source?.name ?? 'pixels')}_${exporter.id}.zip`,
+          );
+        }
+
+        const count = result.files.length;
+        set({ lastExportNote: result.note ?? null });
+        get().pushToast(
+          'info',
+          count === 1
+            ? `已导出 ${result.files[0].name}${result.note ? `（${result.note}）` : ''}`
+            : `已导出 ${count} 个文件${get().exportPackZip ? '（已打包成 zip）' : ''}`,
+        );
+      } catch (err) {
+        get().pushToast('error', err instanceof Error ? err.message : '导出失败');
+      } finally {
+        set({ exporting: false });
+      }
+    },
+
+    copyPngAsImage: async () => {
+      const state = get();
+      if (!state.baseGrid) {
+        state.pushToast('warn', '还没有转换结果');
+        return;
+      }
+      try {
+        const pngExporter = getExporter('png');
+        if (!pngExporter) throw new Error('找不到 PNG 导出器');
+        const values = mergeOptionValues(pngExporter, state.exportOptions.png);
+        const grid = composite(state.baseGrid, state.editLayer);
+        const blob = await exportGridPng(grid, state.palette, {
+          scale: Math.round(numOf(values, 'scale', 1)),
+          background: strOf(values, 'background', 'transparent'),
+        });
+        await copyPngToClipboard(blob);
+        state.pushToast('info', '像素图已复制到剪贴板');
+      } catch (err) {
+        state.pushToast('error', err instanceof Error ? err.message : '复制失败');
+      }
+    },
+
+    copyPaletteText: async () => {
+      const state = get();
+      try {
+        await copyTextToClipboard(paletteHexText(state.palette));
+        state.pushToast('info', `已复制 ${state.palette.colors.length} 个色值到剪贴板`);
+      } catch (err) {
+        state.pushToast('error', err instanceof Error ? err.message : '复制失败');
+      }
+    },
+  };
+};
+
 const createToolSlice: StateCreator<AppStore, [], [], ToolSlice> = (set) => ({
   tool: 'pencil',
   brushSize: 1,
@@ -1393,6 +1668,7 @@ export const useApp = create<AppStore>()((...args) => ({
   ...createPaletteSlice(...args),
   ...createAssistSlice(...args),
   ...createBatchSlice(...args),
+  ...createExportSlice(...args),
   ...createToolSlice(...args),
   ...createUiSlice(...args),
 }));

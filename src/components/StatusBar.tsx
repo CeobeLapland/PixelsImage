@@ -125,7 +125,7 @@ export function StatusBar(): JSX.Element {
           <span className="status__sep" />
         </>
       )}
-      <span className="status__item">M5 · 批量处理</span>
+      <span className="status__item">M6 · 导出扩展</span>
     </footer>
   );
 }

@@ -51,8 +51,8 @@ const MILESTONES: { id: string; label: string; state: MileState }[] = [
   { id: 'M2', label: '像素编辑器', state: 'done' },
   { id: 'M3', label: '调色板引擎', state: 'done' },
   { id: 'M4', label: '智能辅助', state: 'done' },
-  { id: 'M5', label: '批量处理', state: 'doing' },
-  { id: 'M6', label: '导出扩展', state: 'todo' },
+  { id: 'M5', label: '批量处理', state: 'done' },
+  { id: 'M6', label: '导出扩展', state: 'doing' },
   { id: 'M7', label: '打磨与存档', state: 'todo' },
 ];
 
@@ -183,8 +183,9 @@ export function SidePanel(): JSX.Element {
             ))}
           </ul>
           <p className="note">
-            当前处于 <b>M5</b>：在 M4（描边/明暗分层/去背/接缝检查）之上加了批量处理 ——
-            一次拖入多张图、共用一套参数转换、按模板命名、打成一个 zip 导出。
+            当前处于 <b>M6</b>：在批量处理之上补全了导出 ——
+            PNG / 网格 JSON / 精灵图集 / Minecraft 建造蓝图（标尺图纸 + CSV + 色号对照表），
+            另有复制到剪贴板。GIF 动画按需要再补，暂未做。
           </p>
         </Section>
       </div>

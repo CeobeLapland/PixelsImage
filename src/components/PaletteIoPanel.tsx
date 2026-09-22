@@ -54,6 +54,7 @@ export function PaletteIoPanel(): JSX.Element {
   const palette = useApp((s) => s.palette);
   const addCustomPalette = useApp((s) => s.addCustomPalette);
   const pushToast = useApp((s) => s.pushToast);
+  const copyPaletteText = useApp((s) => s.copyPaletteText);
 
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -128,6 +129,14 @@ export function PaletteIoPanel(): JSX.Element {
       </div>
       <button type="button" className="btn btn--block" onClick={() => void exportAs('png')}>
         导出色条 PNG
+      </button>
+      <button
+        type="button"
+        className="btn btn--block"
+        title="每行一个 #RRGGBB，可直接粘进代码或聊天窗"
+        onClick={() => void copyPaletteText()}
+      >
+        复制色值到剪贴板
       </button>
 
       <p className="note">
