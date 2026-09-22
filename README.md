@@ -88,6 +88,7 @@ PixelsImage 想做的是中间那条路：**转换参数随时可调、调色板
 ```bash
 npm install
 npm run dev      # 打开 http://localhost:5173
+npm test         # 运行 core/ 层的单元测试
 npm run build    # 产出 dist/，用任意静态服务器托管即可（如 npx serve dist）
 ```
 

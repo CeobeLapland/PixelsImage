@@ -9,7 +9,7 @@
  */
 
 import type { RGBA, RGBAImage, DitherMode, DistanceMode } from '../types';
-import { createNearestFinder, createDistanceCache } from './distance';
+import { createNearestFinder } from './distance';
 import { getDiffusionKernel, getOrderedMatrix, estimateDitherSpread } from './dither';
 import { paletteToLab } from './space';
 
@@ -19,13 +19,6 @@ export interface QuantizeOptions {
   dither: DitherMode;
   /** 0-1 */
   ditherStrength: number;
-  /**
-   * 查找缓存，**必须属于当前调色板与距离度量**。
-   * 缓存里存的是调色板索引，跨调色板复用会导致索引越界
-   * （例如 16 色板的索引 15 在 2 色板里不存在）。
-   * 不传则内部新建一个，作用域仅限本次调用。
-   */
-  cache?: Uint16Array;
 }
 
 export interface QuantizeTarget {
@@ -56,8 +49,7 @@ export function quantizeInto(
   const strength = opts.ditherStrength <= 0 ? 0 : Math.min(1, opts.ditherStrength);
   const useLab = opts.distance === 'lab';
   const labPal = useLab ? paletteToLab(palette) : null;
-  const cache = opts.cache && opts.cache.length === 32768 ? opts.cache : createDistanceCache();
-  const nearest = createNearestFinder(palette, opts.distance, labPal, cache);
+  const nearest = createNearestFinder(palette, opts.distance, labPal);
 
   const diffusion = strength > 0 ? getDiffusionKernel(opts.dither) : null;
   const ordered = strength > 0 ? getOrderedMatrix(opts.dither) : null;

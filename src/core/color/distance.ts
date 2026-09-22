@@ -14,7 +14,15 @@ const CACHE_SIZE = 32768;
 /** 未命中标记。存「索引 + 1」，0 表示未填 */
 const CACHE_EMPTY = 0;
 
-export function createDistanceCache(): Uint16Array {
+/**
+ * 查找缓存：5bit/通道 → 调色板索引。
+ *
+ * **作用域必须与调色板一致**：缓存里存的是索引，换调色板后旧索引会越界
+ * （16 色板的索引 15 在 2 色板里不存在）。
+ * 所以它由 createNearestFinder 内部创建、随 finder 一起被丢弃，
+ * 不对外暴露 —— 这样就不存在「传错缓存」这种写法的可能。
+ */
+function createCache(): Uint16Array {
   return new Uint16Array(CACHE_SIZE);
 }
 
@@ -24,7 +32,7 @@ function cacheKey(r: number, g: number, b: number): number {
 }
 
 /**
- * 构建「(r,g,b) → 调色板索引」的查找函数。
+ * 构建「(r,g,b) → 调色板索引」的查找函数，内部自带缓存。
  *
  * labPal 为调色板的 LAB 展平数组（distance === 'lab' 时必需）。
  */
@@ -32,20 +40,26 @@ export function createNearestFinder(
   palette: readonly RGBA[],
   distance: DistanceMode,
   labPal: Float32Array | null,
-  cache: Uint16Array,
 ): (r: number, g: number, b: number) => number {
   const n = palette.length;
 
-  // 单色调色板：无需计算，直接返回 0（后续比较循环会退化成无意义的遍历）
+  // lab 模式必须给 LAB 表。否则会静默退回欧氏距离，产出「看起来正常但不对」的结果 ——
+  // 这种降级比报错更难发现，所以直接拒绝。
+  if (distance === 'lab' && !labPal) {
+    throw new Error('lab 距离模式需要传入预先计算的调色板 LAB 数组');
+  }
+
+  // 单色调色板：无需计算，直接返回 0
   if (n === 1) return () => 0;
 
+  const cache = createCache();
   const labScratch = new Float32Array(3);
 
   const find = (r: number, g: number, b: number): number => {
     let best = 0;
     let bestD = Infinity;
 
-    if (distance === 'lab' && labPal) {
+    if (labPal) {
       rgbToLab(r, g, b, labScratch);
       const sl = labScratch[0];
       const sa = labScratch[1];

@@ -13,7 +13,6 @@
  */
 
 import { countUsedColors, quantizeInto, type QuantizeTarget } from './color/quantize';
-import { createDistanceCache } from './color/distance';
 import { preprocess } from './preprocess';
 import { downsample } from './sampling';
 import { trimTransparent } from './assists/trim';
@@ -80,7 +79,6 @@ export function convert(
       distance,
       dither: settings.dither,
       ditherStrength: settings.ditherStrength,
-      cache: createDistanceCache(),
     },
     target,
   );

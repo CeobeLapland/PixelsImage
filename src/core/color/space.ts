@@ -64,30 +64,31 @@ export function paletteToLab(colors: readonly (readonly number[])[]): Float32Arr
   return out;
 }
 
+const HEX_ONLY = /^[0-9a-fA-F]+$/;
+
 /** 解析 #RGB / #RRGGBB / #RRGGBBAA → RGBA。失败返回 null */
 export function parseHex(input: string): [number, number, number, number] | null {
   let hex = input.trim();
   if (hex.startsWith('#')) hex = hex.slice(1);
 
+  // 先整体校验字符，避免 parseInt 把非法输入解析成 NaN 后混过去
+  if (!HEX_ONLY.test(hex)) return null;
+
   if (hex.length === 3) {
     const r = hex[0];
     const g = hex[1];
     const b = hex[2];
-    return [
-      parseInt(r + r, 16),
-      parseInt(g + g, 16),
-      parseInt(b + b, 16),
-      255,
-    ];
+    return [parseInt(r + r, 16), parseInt(g + g, 16), parseInt(b + b, 16), 255];
   }
+
   if (hex.length === 6 || hex.length === 8) {
     const r = parseInt(hex.slice(0, 2), 16);
     const g = parseInt(hex.slice(2, 4), 16);
     const b = parseInt(hex.slice(4, 6), 16);
     const a = hex.length === 8 ? parseInt(hex.slice(6, 8), 16) : 255;
-    if (Number.isNaN(r) || Number.isNaN(g) || Number.isNaN(b) || Number.isNaN(a)) return null;
     return [r, g, b, a];
   }
+
   return null;
 }
 

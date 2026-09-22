@@ -62,13 +62,18 @@ function histBump(r: number, g: number, b: number, weight: number): void {
   histB[key] += b * weight;
 }
 
-/* ------------------------------------------------------------- 最近邻放大 */
+/* ------------------------------------------------------------- 最近邻缩放 */
 
 /**
- * pixelPerfect 用：以整数倍最近邻把源图放大到中间尺寸。
+ * pixelPerfect 用：以最近邻把源图缩放到指定尺寸。
+ *
+ * 注意与 composite.ts 的 `upscaleNearest(src, k)` 区分：
+ * 那个是「按整数倍放大」（导出 PNG 用），这个是「缩放到给定宽高」。
+ * 曾经两者同名，语义完全不同，容易看错。
+ *
  * 放大的目的是让后续的面积平均能用「整数倍」去做，保证每格覆盖像素数一致。
  */
-export function upscaleNearest(
+export function resizeNearest(
   src: RGBAImage,
   dstW: number,
   dstH: number,
@@ -116,7 +121,7 @@ export function downsample(
     // 找一个整数倍 k，使得 tw*k、th*k 都 ≥ 源图尺寸（放大而非缩小时才需要 k>1）
     const k = Math.max(1, Math.ceil(Math.max(src.width / tw, src.height / th)));
     if (k > 1) {
-      input = upscaleNearest(src, tw * k, th * k);
+      input = resizeNearest(src, tw * k, th * k);
     }
   }
 
