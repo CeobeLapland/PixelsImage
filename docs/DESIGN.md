@@ -351,7 +351,8 @@ src/
 ├── App.tsx                     布局：左工具栏 / 中画布 / 右属性面板 / 底状态栏
 │
 ├── core/                       纯逻辑层（不 import 任何 React）
-│   ├── types.ts                PixelGrid / Palette / ConvertSettings / Document
+│   ├── types.ts                PixelGrid / Palette / ConvertSettings / Document   ✅
+│   ├── image.ts                源图解码、尺寸保护（大图降采样）                    ✅
 │   ├── color/
 │   │   ├── space.ts            hex ↔ RGB ↔ LAB / OKLab 转换
 │   │   ├── distance.ts         rgb / weighted / lab 距离 + 查找缓存
@@ -377,28 +378,35 @@ src/
 │   └── extract.ts              中位切分 / k-means 提色
 │
 ├── state/
-│   ├── store.ts                Zustand store（document / ui / tool / history 切片）
+│   ├── store.ts                Zustand store（source / doc / settings / tool / ui 切片）  ✅
 │   ├── history.ts              撤销栈
 │   ├── presets.ts              转换预设的持久化（localStorage）
 │   └── project.ts              .pixproj 读写（settings + palette + editLayer + source 引用）
 │
 ├── components/
-│   ├── Dropzone.tsx            拖拽 / 粘贴 / 文件选择
-│   ├── CanvasView.tsx          双 canvas 画布、缩放平移、输入事件分发
-│   ├── Toolbar.tsx             工具选择、笔刷尺寸、对称开关
-│   ├── ConvertPanel.tsx        尺寸/采样/量化/抖动/预处理控件
-│   ├── PalettePanel.tsx        调色板选择、提色、导入导出、全局换色
-│   ├── AssistsPanel.tsx        描边、明暗、去背、平铺预览
-│   ├── ComparePanel.tsx        原图对照：并排 / 侧滑分割 / 叠加
-│   ├── LayerPanel.tsx          底层(原图)显隐、编辑层清空/重采样
-│   ├── ExportPanel.tsx         各导出器的参数与执行
-│   ├── BatchPanel.tsx          批量队列与打包导出
-│   ├── StatusBar.tsx           尺寸、光标坐标、色号、缩放、撤销栈深度
-│   └── shortcuts/ShortcutsHelp.tsx
+│   ├── AppHeader.tsx           顶栏：品牌、当前文件信息、清除/折叠                   ✅
+│   ├── ToolRail.tsx            左侧竖直工具条（M2 起启用）                          ✅
+│   ├── Stage.tsx               舞台：拥有拖拽 / 粘贴 / 文件选择三类输入              ✅
+│   ├── Dropzone.tsx            空状态与拖拽热区                                     ✅
+│   ├── Viewport.tsx            画布：缩放、平移、棋盘格底、源像素网格、缩放控件       ✅
+│   ├── SidePanel.tsx           右侧面板：折叠分组、源图信息、显示选项、进度           ✅
+│   ├── StatusBar.tsx           底部读数：尺寸 / 光标坐标 / 缩放 / 忙碌               ✅
+│   ├── Toasts.tsx              提示条                                               ✅
+│   ├── PixelIcon.tsx           像素图标：字符矩阵 → SVG，零图标依赖                  ✅
+│   ├── ConvertPanel.tsx        尺寸/采样/量化/抖动/预处理控件        （M1）
+│   ├── PalettePanel.tsx        调色板选择、提色、导入导出、全局换色    （M3）
+│   ├── AssistsPanel.tsx        描边、明暗、去背、平铺预览             （M4）
+│   ├── ComparePanel.tsx        原图对照：并排 / 侧滑分割 / 叠加      （M1）
+│   ├── LayerPanel.tsx          底层(原图)显隐、编辑层清空/重采样      （M2）
+│   ├── ExportPanel.tsx         各导出器的参数与执行                  （M6）
+│   ├── BatchPanel.tsx          批量队列与打包导出                   （M5）
+│   └── shortcuts/ShortcutsHelp.tsx  快捷键帮助面板                  （M7）
 │
 └── styles/
-    └── global.css              暗色主题 CSS 变量
+    └── global.css              暗色主题 CSS 变量与全部组件样式                        ✅
 ```
+
+标注 ✅ 的是 M0 已落地的文件，其余为规划中的位置。
 
 **分层规则**：`core/` 与 `palettes/` 不依赖 React 与 DOM（`exporters/` 例外，它需要 `Blob` / `Canvas`，但仍不 import React）。这样这部分逻辑可以单独写测试，将来也能直接改造成 CLI。
 

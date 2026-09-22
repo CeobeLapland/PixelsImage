@@ -11,7 +11,7 @@
 
 | 里程碑 | 主题 | 状态 |
 | --- | --- | --- |
-| M0 | 工程骨架与导入 | ⬜ 未开始 |
+| M0 | 工程骨架与导入 | ✅ 已完成 |
 | M1 | 转换引擎（核心） | ⬜ 未开始 |
 | M2 | 像素编辑器 | ⬜ 未开始 |
 | M3 | 调色板引擎 | ⬜ 未开始 |
@@ -28,17 +28,21 @@
 
 **目标**：能打开页面、拖进一张图、看到原图，且工程结构立起来。
 
-- [ ] `npm create vite` 初始化 React + TS 工程，开启 `strict`
-- [ ] `tsconfig` 路径别名 `@/` → `src/`
-- [ ] 三栏布局骨架（左工具栏 / 中画布 / 右面板）+ 暗色主题 CSS 变量
-- [ ] `state/store.ts`：Zustand store 切片（`source` / `settings` / `document` / `ui` / `tool`）
-- [ ] `core/types.ts`：把 DESIGN §3 的模型全部落地
-- [ ] `Dropzone.tsx`：拖拽、`Ctrl+V` 粘贴、文件选择三种导入方式
-- [ ] 源图解码：`createImageBitmap` → `OffscreenCanvas` → `ImageData`
-- [ ] 原图预览 canvas（支持缩放平移）
-- [ ] 大图保护：> 4096px 时提示并生成降采样副本
+- [x] Vite + React + TS 工程初始化，开启 `strict`（含 `noUnusedLocals` 等严格项）
+- [x] `tsconfig` 路径别名 `@/` → `src/`
+- [x] 三栏布局骨架（左工具栏 / 中画布 / 右面板）+ 暗色主题 CSS 变量
+- [x] `state/store.ts`：Zustand store 切片（`source` / `doc` / `settings` / `tool` / `ui`）
+- [x] `core/types.ts`：把 DESIGN §3 的模型全部落地
+- [x] `Stage.tsx`：拖拽、`Ctrl+V` 粘贴、文件选择三种导入方式
+- [x] 源图解码：`createImageBitmap` → `OffscreenCanvas` → `ImageData`
+- [x] 原图预览 canvas（缩放 / 平移 / 棋盘格底 / 源像素网格）
+- [x] 大图保护：源数据最长边 > 8192 px 或 > 6400 万像素时降采样并提示
 
 **验收**：拖入一张 4K 照片，画布正常显示，可缩放平移，页面不卡；状态栏显示原图尺寸。
+
+**实测结果**：已用 800×600 合成图在浏览器中验证——三种导入方式、滚轮缩放、
+拖拽平移、`0`/`1` 快捷键、`Tab` 折叠面板、拖拽提示环全部正常，控制台无报错。
+生产构建通过（gzip 后 JS 78 KB / CSS 3.6 KB）。
 
 ---
 

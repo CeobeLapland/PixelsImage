@@ -1,0 +1,185 @@
+/**
+ * 源图解码与尺寸保护。
+ *
+ * 两级上限：
+ * - PREVIEW_MAX_EDGE：画布显示用位图上限。超过则再降采样一份预览，保证 UI 流畅。
+ * - HARD_MAX_*：处理上限。超过则源数据本身降采样，并标记 truncated 由 UI 提示。
+ *
+ * 见 docs/DESIGN.md §8 性能策略
+ */
+
+import type { SourceImage } from './types';
+
+/** 显示位图的最长边上限 */
+const PREVIEW_MAX_EDGE = 2048;
+/** 源数据最长边上限 */
+const HARD_MAX_EDGE = 8192;
+/** 源数据总像素上限（约 64MPix ≈ 256MB RGBA） */
+const HARD_MAX_PIXELS = 64_000_000;
+
+type AnyCanvas = OffscreenCanvas | HTMLCanvasElement;
+type AnyCtx2D = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
+
+/** 复用一个 scratch canvas，避免每次解码都新建 */
+let scratchCanvas: AnyCanvas | null = null;
+
+function getScratchCanvas(w: number, h: number): AnyCanvas {
+  if (!scratchCanvas) {
+    if (typeof OffscreenCanvas !== 'undefined') {
+      scratchCanvas = new OffscreenCanvas(w, h);
+    } else {
+      const el = document.createElement('canvas');
+      el.width = w;
+      el.height = h;
+      scratchCanvas = el;
+    }
+  }
+  scratchCanvas.width = w;
+  scratchCanvas.height = h;
+  return scratchCanvas;
+}
+
+function get2d(canvas: AnyCanvas): AnyCtx2D {
+  const ctx = canvas.getContext('2d', { willReadFrequently: true }) as AnyCtx2D | null;
+  if (!ctx) throw new Error('无法创建 2D 绘图上下文');
+  return ctx;
+}
+
+function drawToImageData(
+  src: CanvasImageSource,
+  sw: number,
+  sh: number,
+  dw: number,
+  dh: number,
+  smooth: boolean,
+): ImageData {
+  const canvas = getScratchCanvas(dw, dh);
+  const ctx = get2d(canvas);
+  ctx.imageSmoothingEnabled = smooth;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.clearRect(0, 0, dw, dh);
+  ctx.drawImage(src, 0, 0, sw, sh, 0, 0, dw, dh);
+  return ctx.getImageData(0, 0, dw, dh);
+}
+
+let idSeq = 0;
+
+/** 计算源数据尺寸：超出处理上限则等比降采样 */
+function planSourceSize(w: number, h: number): { w: number; h: number; truncated: boolean } {
+  if (w > HARD_MAX_EDGE || h > HARD_MAX_EDGE || w * h > HARD_MAX_PIXELS) {
+    const scale = Math.min(
+      HARD_MAX_EDGE / w,
+      HARD_MAX_EDGE / h,
+      Math.sqrt(HARD_MAX_PIXELS / (w * h)),
+    );
+    return { w: Math.max(1, Math.round(w * scale)), h: Math.max(1, Math.round(h * scale)), truncated: true };
+  }
+  return { w, h, truncated: false };
+}
+
+/** 由源数据生成显示位图，必要时再降采样一次 */
+async function makePreview(
+  imageData: ImageData,
+): Promise<{ bitmap: ImageBitmap; scale: number }> {
+  const { width: w, height: h } = imageData;
+  const edge = Math.max(w, h);
+  if (edge <= PREVIEW_MAX_EDGE) {
+    return { bitmap: await createImageBitmap(imageData), scale: 1 };
+  }
+
+  const ratio = PREVIEW_MAX_EDGE / edge;
+  const pw = Math.max(1, Math.round(w * ratio));
+  const ph = Math.max(1, Math.round(h * ratio));
+
+  const full = await createImageBitmap(imageData);
+  try {
+    const canvas = getScratchCanvas(pw, ph);
+    const ctx = get2d(canvas);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.clearRect(0, 0, pw, ph);
+    ctx.drawImage(full, 0, 0, w, h, 0, 0, pw, ph);
+    const previewData = ctx.getImageData(0, 0, pw, ph);
+    return { bitmap: await createImageBitmap(previewData), scale: w / pw };
+  } finally {
+    full.close();
+  }
+}
+
+/** 从 File / Blob 加载源图 */
+export async function loadSourceImage(
+  file: File | Blob,
+  fallbackName = '粘贴的图片',
+): Promise<SourceImage> {
+  const name = file instanceof File ? file.name : fallbackName;
+  const type = file.type || 'image/*';
+  const bytes = file.size;
+
+  let bitmap: ImageBitmap;
+  try {
+    bitmap = await createImageBitmap(file);
+  } catch {
+    throw new Error(
+      '无法解码该文件，可能不是受支持的图片格式（支持 PNG / JPEG / WebP / GIF / BMP）',
+    );
+  }
+
+  try {
+    const originalWidth = bitmap.width;
+    const originalHeight = bitmap.height;
+    if (!originalWidth || !originalHeight) {
+      throw new Error('图片尺寸为 0，无法处理');
+    }
+
+    const plan = planSourceSize(originalWidth, originalHeight);
+
+    const imageData = drawToImageData(
+      bitmap,
+      originalWidth,
+      originalHeight,
+      plan.w,
+      plan.h,
+      true,
+    );
+
+    const { bitmap: previewBitmap, scale } = await makePreview(imageData);
+
+    idSeq += 1;
+    return {
+      id: `src-${Date.now().toString(36)}-${idSeq}`,
+      name,
+      type,
+      bytes,
+      originalWidth,
+      originalHeight,
+      imageData,
+      previewBitmap,
+      previewScale: scale,
+      truncated: plan.truncated,
+    };
+  } finally {
+    bitmap.close();
+  }
+}
+
+/** 可解码的图片类型（用于文件选择与拖拽过滤） */
+export const ACCEPTED_TYPES =
+  'image/png,image/jpeg,image/webp,image/gif,image/bmp,image/avif';
+
+export function isProbablyImage(file: File): boolean {
+  if (file.type.startsWith('image/')) return true;
+  return /\.(png|jpe?g|webp|gif|bmp|avif)$/i.test(file.name);
+}
+
+/** 人类可读的字节数 */
+export function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ['KB', 'MB', 'GB'];
+  let value = bytes / 1024;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[unitIndex]}`;
+}
