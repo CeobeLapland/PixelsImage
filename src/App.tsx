@@ -3,6 +3,7 @@ import { type JSX } from 'react';
 import { useShortcuts } from '@/state/useShortcuts';
 import { usePipelineRunner } from '@/state/usePipeline';
 import { AppHeader } from './components/AppHeader';
+import { ShortcutsHelp } from './components/ShortcutsHelp';
 import { SidePanel } from './components/SidePanel';
 import { Stage } from './components/Stage';
 import { StatusBar } from './components/StatusBar';
@@ -27,6 +28,7 @@ export default function App(): JSX.Element {
       </div>
       <StatusBar />
       <Toasts />
+      <ShortcutsHelp />
     </div>
   );
 }

@@ -224,6 +224,37 @@ export async function makeThumbnail(file: File | Blob): Promise<ImageBitmap | nu
 export const ACCEPTED_TYPES =
   'image/png,image/jpeg,image/webp,image/gif,image/bmp,image/avif';
 
+/**
+ * Blob → data URL。
+ *
+ * 存档要把源图内嵌进 JSON，而 JSON 里只能放字符串，所以必须走这一步。
+ * 用 FileReader 而不是自己拼 base64：后者要先把 ArrayBuffer 转成二进制字符串，
+ * 几兆的缓冲上做字符拼接既慢又容易爆栈。
+ */
+export function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    if (typeof FileReader === 'undefined') {
+      reject(new Error('当前环境不支持 FileReader，无法内嵌源图'));
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result;
+      if (typeof result === 'string') resolve(result);
+      else reject(new Error('源图编码失败'));
+    };
+    reader.onerror = () => reject(new Error('源图编码失败'));
+    reader.readAsDataURL(blob);
+  });
+}
+
+/** data URL → Blob；交给 createImageBitmap 解码 */
+export async function dataUrlToBlob(dataUrl: string): Promise<Blob> {
+  const response = await fetch(dataUrl);
+  if (!response.ok) throw new Error('存档里的源图无法读取');
+  return await response.blob();
+}
+
 export function isProbablyImage(file: File): boolean {
   if (file.type.startsWith('image/')) return true;
   return /\.(png|jpe?g|webp|gif|bmp|avif)$/i.test(file.name);

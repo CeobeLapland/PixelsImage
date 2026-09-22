@@ -38,7 +38,7 @@ import { createZip, type ZipEntry } from '@/core/batch/zip';
 import { applyCellEdits, applyEditWrites, changesToEdits, cloneEditLayer, countEdits, resampleEditLayer, writeCell, type CellEdit, type CellWrite } from '@/core/edit';
 import { composite } from '@/core/composite';
 import { countUsedColors } from '@/core/color/quantize';
-import { decodeImage, isProbablyImage, loadSourceImage, makeThumbnail } from '@/core/image';
+import { decodeImage, blobToDataUrl, dataUrlToBlob, formatBytes, isProbablyImage, loadSourceImage, makeThumbnail } from '@/core/image';
 import { checkSeams, type SeamReport } from '@/core/assists/tile';
 import { countSolidCells, planOutline, type OutlineOptions } from '@/core/assists/outline';
 import { planShade, type ShadeOptions } from '@/core/assists/shade';
@@ -58,6 +58,18 @@ import {
 } from '@/core/exporters/registry';
 import { BUILTIN_PALETTES, DEFAULT_PALETTE_ID, resolvePalette } from '@/palettes/builtin';
 import { mergeSimilarColors, remapEditLayer, remapGridIndices, sortColors, type SortKey } from '@/palettes/ops';
+import {
+  parseConvertPresets,
+  serializeConvertPresets,
+  type ConvertPreset,
+} from '@/core/presets';
+import {
+  buildProject,
+  buildProjectName,
+  describeProject,
+  parseProject,
+  serializeProject,
+} from '@/core/project';
 import { buildBatchZip, getBatchConverter } from './batch';
 import {
   createEditLayer,
@@ -128,6 +140,14 @@ export interface SourceSlice {
   source: SourceImage | null;
   sourceStatus: SourceStatus;
   sourceError: string | null;
+  /**
+   * 导入时拿到的原始文件/Blob。
+   *
+   * 留着它是为了存档：`.pixproj` 要把源图内嵌进去，而**原始文件字节**比
+   * 「把解码后的像素重新编码成 PNG」小得多（一张 JPEG 照片差 3–5 倍）。
+   * 浏览器对 File 通常是磁盘句柄而非常驻内存，所以留着它本身几乎不占内存。
+   */
+  sourceBlob: File | Blob | null;
   loadSource: (file: File | Blob, fallbackName?: string) => Promise<void>;
   clearSource: () => void;
 }
@@ -356,6 +376,31 @@ export interface ExportSlice {
   copyPaletteText: () => Promise<void>;
 }
 
+/**
+ * 存档与预设（M7）。
+ *
+ * 存档把**源图内嵌**进 `.pixproj`（理由见 core/project.ts 的注释），
+ * 所以存/读都要编解码一次图片，放在主线程会卡一下 —— 用一个 busy 标记
+ * 让按钮变成「正在处理…」，用户至少知道它在干活。
+ */
+export interface ProjectSlice {
+  /** 最近一次存档的时间；null = 本次会话还没存过 */
+  projectSavedAt: number | null;
+  projectBusy: boolean;
+  convertPresets: ConvertPreset[];
+  /** 快捷键帮助面板开关 */
+  shortcutsOpen: boolean;
+
+  setShortcutsOpen: (open: boolean) => void;
+  saveProject: () => Promise<void>;
+  loadProjectFile: (file: File) => Promise<void>;
+  saveConvertPreset: (name: string) => void;
+  applyConvertPreset: (id: string) => void;
+  removeConvertPreset: (id: string) => void;
+  /** 抹掉工作区（图 / 结果 / 队列），但不动预设这些用户数据 */
+  clearWorkspace: () => void;
+}
+
 export interface ToolSlice {
   tool: ToolId;
   brushSize: number;
@@ -405,6 +450,14 @@ export interface UiSlice {
    */
   interacting: boolean;
   setInteracting: (v: boolean) => void;
+
+  /**
+   * 转换已降级到主线程（Web Worker 不可用或崩了）。
+   *
+   * 由 usePipeline 在每次拿到结果时同步。之所以要显式暴露到 UI：
+   * 降级后界面**只是变卡**，不提示的话用户会以为是图太大或者自己电脑不行。
+   */
+  workerFallback: boolean;
 }
 
 export type AppStore = SourceSlice &
@@ -416,6 +469,7 @@ export type AppStore = SourceSlice &
   AssistSlice &
   BatchSlice &
   ExportSlice &
+  ProjectSlice &
   ToolSlice &
   UiSlice;
 
@@ -528,6 +582,28 @@ function saveExportSettings(settings: StoredExportSettings): void {
   }
 }
 
+/** 转换预设的持久化键 */
+const CONVERT_PRESET_STORAGE_KEY = 'pixelsimage.convertPresets.v1';
+
+function loadConvertPresets(): ConvertPreset[] {
+  try {
+    if (typeof localStorage === 'undefined') return [];
+    const raw = localStorage.getItem(CONVERT_PRESET_STORAGE_KEY);
+    return raw ? parseConvertPresets(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveConvertPresets(presets: readonly ConvertPreset[]): void {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem(CONVERT_PRESET_STORAGE_KEY, serializeConvertPresets(presets));
+  } catch {
+    // 存不下就算了
+  }
+}
+
 /**
  * 在已有名字之外找一个不重名的。
  *
@@ -574,6 +650,7 @@ const createSourceSlice: StateCreator<AppStore, [], [], SourceSlice> = (set, get
   source: null,
   sourceStatus: 'idle',
   sourceError: null,
+  sourceBlob: null,
 
   async loadSource(file, fallbackName) {
     if (file instanceof File && !isProbablyImage(file)) {
@@ -586,7 +663,7 @@ const createSourceSlice: StateCreator<AppStore, [], [], SourceSlice> = (set, get
       const source = await loadSourceImage(file, fallbackName);
       // 换图即作废旧结果，避免编辑层与新图尺寸不一致
       get().clearResult();
-      set({ source, sourceStatus: 'ready', sourceError: null, doc: null });
+      set({ source, sourceStatus: 'ready', sourceError: null, doc: null, sourceBlob: file });
       if (source.truncated) {
         get().pushToast(
           'warn',
@@ -604,7 +681,15 @@ const createSourceSlice: StateCreator<AppStore, [], [], SourceSlice> = (set, get
     const current = get().source;
     if (current) current.previewBitmap.close();
     get().clearResult();
-    set({ source: null, sourceStatus: 'idle', sourceError: null, doc: null, cursor: null, hover: null });
+    set({
+      source: null,
+      sourceStatus: 'idle',
+      sourceError: null,
+      doc: null,
+      sourceBlob: null,
+      cursor: null,
+      hover: null,
+    });
   },
 });
 
@@ -1601,6 +1686,170 @@ const createExportSlice: StateCreator<AppStore, [], [], ExportSlice> = (set, get
   };
 };
 
+const createProjectSlice: StateCreator<AppStore, [], [], ProjectSlice> = (set, get) => ({
+  projectSavedAt: null,
+  projectBusy: false,
+  convertPresets: loadConvertPresets(),
+  shortcutsOpen: false,
+
+  setShortcutsOpen: (shortcutsOpen) => set({ shortcutsOpen }),
+
+  saveProject: async () => {
+    const state = get();
+    if (!state.source || !state.sourceBlob) {
+      state.pushToast('warn', '还没有载入图片，没有可存档的内容');
+      return;
+    }
+
+    set({ projectBusy: true });
+    try {
+      const dataUrl = await blobToDataUrl(state.sourceBlob);
+      const project = buildProject({
+        name: state.source.name,
+        source: dataUrl,
+        originalWidth: state.source.originalWidth,
+        originalHeight: state.source.originalHeight,
+        settings: state.settings,
+        palette: state.palette,
+        baseGrid: state.baseGrid,
+        editLayer: state.editLayer,
+        savedAt: Date.now(),
+      });
+      const blob = new Blob([serializeProject(project)], { type: 'application/json' });
+      downloadBlob(blob, buildProjectName(state.source.name));
+      set({ projectSavedAt: project.savedAt });
+      state.pushToast(
+        'info',
+        `已存档 ${buildProjectName(state.source.name)}（${formatBytes(blob.size)}，含源图与 ${state.editedCount} 格手改）`,
+      );
+    } catch (err) {
+      state.pushToast('error', err instanceof Error ? err.message : '存档失败');
+    } finally {
+      set({ projectBusy: false });
+    }
+  },
+
+  loadProjectFile: async (file) => {
+    const state = get();
+    set({ projectBusy: true });
+    try {
+      const parsed = parseProject(await file.text());
+
+      /* 先把源图读进来。这一步内部会 clearResult（换图必须作废旧结果），
+         所以编辑层要在它**之后**才写入，否则会被一起清掉。 */
+      const blob = await dataUrlToBlob(parsed.project.source);
+      await get().loadSource(blob, parsed.project.name);
+      if (get().sourceStatus !== 'ready') throw new Error('存档里的源图解码失败');
+
+      // 源图是内嵌的 PNG，它的尺寸不等于「原始文件尺寸」，这两项要用存档里的值
+      const loaded = get().source;
+      if (loaded) {
+        set({
+          source: {
+            ...loaded,
+            bytes: blob.size,
+            originalWidth: parsed.project.originalWidth || loaded.originalWidth,
+            originalHeight: parsed.project.originalHeight || loaded.originalHeight,
+          },
+        });
+      }
+
+      /* 一次性把结果、编辑层、参数、调色板写进去。
+         关键是**直接调 applyResult**，而不是等流水线重算 ——
+         重算是异步的，编辑层会在结果到达之前被 applyResult 判定为「尺寸不符」而重建，
+         手改就这么静默丢了。存档里本来就带了 baseGrid，不必再算一遍。
+
+         editOrigin 先清空：applyResult 会据此建出一张与网格同尺寸的空编辑层，
+         随后我们用手改层整个替换掉它。这样写比「先塞 origin 让它重采样一次」
+         少一次无用功，意图也更直白。 */
+      set({ settings: parsed.settings, palette: parsed.palette, editOrigin: null });
+
+      if (parsed.baseGrid) {
+        get().applyResult(parsed.baseGrid, parsed.palette, {
+          targetW: parsed.baseGrid.w,
+          targetH: parsed.baseGrid.h,
+          usedColors: countUsedColors(parsed.baseGrid.indices, parsed.baseGrid.alpha),
+          trimmed: false,
+          ms: 0,
+          fallback: false,
+        });
+      }
+
+      const restored = parsed.editLayer;
+      if (restored) {
+        set({
+          editLayer: restored,
+          editOrigin: { w: restored.w, h: restored.h, layer: cloneEditLayer(restored) },
+          editedCount: countEdits(restored),
+          editVersion: get().editVersion + 1,
+        });
+      }
+
+      set({ projectSavedAt: parsed.project.savedAt, batchActiveId: null });
+
+      const lostEdits = parsed.project.edit !== null && restored === null;
+      if (lostEdits) {
+        state.pushToast('warn', '存档里的手改数据已损坏，已跳过；图与参数照常还原');
+      } else {
+        state.pushToast('info', `已打开存档：${describeProject(parsed.project)}`);
+      }
+    } catch (err) {
+      state.pushToast('error', err instanceof Error ? err.message : '读取存档失败');
+    } finally {
+      set({ projectBusy: false });
+    }
+  },
+
+  saveConvertPreset: (rawName) => {
+    const name = rawName.trim();
+    if (name === '') return;
+    const state = get();
+    const finalName = uniqueName(name, state.convertPresets.map((p) => p.name));
+    const preset: ConvertPreset = {
+      id: `convert-preset-${Date.now().toString(36)}-${state.convertPresets.length}`,
+      name: finalName,
+      settings: { ...state.settings, preprocess: { ...state.settings.preprocess } },
+      savedAt: Date.now(),
+    };
+    const next = [preset, ...state.convertPresets];
+    saveConvertPresets(next);
+    set({ convertPresets: next });
+    state.pushToast('info', `已保存转换预设「${finalName}」`);
+  },
+
+  applyConvertPreset: (id) => {
+    const preset = get().convertPresets.find((p) => p.id === id);
+    if (!preset) return;
+    set({ settings: { ...preset.settings, preprocess: { ...preset.settings.preprocess } } });
+    get().pushToast('info', `已套用转换预设「${preset.name}」`);
+  },
+
+  removeConvertPreset: (id) => {
+    const state = get();
+    if (!state.convertPresets.some((p) => p.id === id)) return;
+    const next = state.convertPresets.filter((p) => p.id !== id);
+    saveConvertPresets(next);
+    set({ convertPresets: next });
+    state.pushToast('info', '已删除该转换预设');
+  },
+
+  clearWorkspace: () => {
+    const state = get();
+    // 先关掉缩略图位图，否则清空后它们会一直挂着
+    for (const item of state.batchItems) item.thumb?.close();
+    state.clearSource();
+    set({
+      batchItems: [],
+      batchActiveId: null,
+      batchRunFingerprint: null,
+      projectSavedAt: null,
+      seam: null,
+      view: { ...IDENTITY_VIEW },
+    });
+    state.pushToast('info', '工作区已清空（自定义调色板、预设、方块映射都保留着）');
+  },
+});
+
 const createToolSlice: StateCreator<AppStore, [], [], ToolSlice> = (set) => ({
   tool: 'pencil',
   brushSize: 1,
@@ -1655,6 +1904,8 @@ const createUiSlice: StateCreator<AppStore, [], [], UiSlice> = (set, get) => ({
 
   interacting: false,
   setInteracting: (interacting) => set({ interacting }),
+
+  workerFallback: false,
 });
 
 /* --------------------------------------------------------------- 组装 */
@@ -1669,6 +1920,7 @@ export const useApp = create<AppStore>()((...args) => ({
   ...createAssistSlice(...args),
   ...createBatchSlice(...args),
   ...createExportSlice(...args),
+  ...createProjectSlice(...args),
   ...createToolSlice(...args),
   ...createUiSlice(...args),
 }));

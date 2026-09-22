@@ -1,14 +1,29 @@
-import type { JSX } from 'react';
+import { useRef, type ChangeEvent, type JSX } from 'react';
 
 import { formatBytes } from '@/core/image';
+import { PROJECT_EXTENSION } from '@/core/project';
 import { useApp } from '@/state/store';
 import { BRAND_MARK, PixelIcon } from './PixelIcon';
 
 export function AppHeader(): JSX.Element {
   const source = useApp((s) => s.source);
-  const clearSource = useApp((s) => s.clearSource);
+  const clearWorkspace = useApp((s) => s.clearWorkspace);
   const panelCollapsed = useApp((s) => s.panelCollapsed);
   const togglePanel = useApp((s) => s.togglePanel);
+
+  const saveProject = useApp((s) => s.saveProject);
+  const loadProjectFile = useApp((s) => s.loadProjectFile);
+  const projectBusy = useApp((s) => s.projectBusy);
+  const projectSavedAt = useApp((s) => s.projectSavedAt);
+  const setShortcutsOpen = useApp((s) => s.setShortcutsOpen);
+
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const onProjectFile = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (file) void loadProjectFile(file);
+  };
 
   return (
     <header className="header">
@@ -38,14 +53,48 @@ export function AppHeader(): JSX.Element {
       </div>
 
       <div className="header__actions">
+        <input
+          ref={inputRef}
+          type="file"
+          accept={`${PROJECT_EXTENSION},application/json`}
+          hidden
+          onChange={onProjectFile}
+        />
+        <button
+          type="button"
+          className="btn btn--primary"
+          disabled={!source || projectBusy}
+          title="把源图、参数、调色板与手工修改一起写进 .pixproj"
+          onClick={() => void saveProject()}
+        >
+          {projectBusy ? '处理中…' : projectSavedAt === null ? '存档' : '再存档'}
+        </button>
         <button
           type="button"
           className="btn"
-          onClick={clearSource}
-          disabled={!source}
-          title="移除当前图片"
+          disabled={projectBusy}
+          title={`打开一个 ${PROJECT_EXTENSION} 存档`}
+          onClick={() => inputRef.current?.click()}
         >
-          清除
+          打开存档
+        </button>
+        <button
+          type="button"
+          className="btn"
+          onClick={clearWorkspace}
+          disabled={!source}
+          title="清空图片、结果与批量队列（自定义调色板、预设、方块映射会保留）"
+        >
+          清空工作区
+        </button>
+        <button
+          type="button"
+          className="btn btn--icon"
+          title="快捷键（?）"
+          aria-label="快捷键"
+          onClick={() => setShortcutsOpen(true)}
+        >
+          ?
         </button>
         <button
           type="button"

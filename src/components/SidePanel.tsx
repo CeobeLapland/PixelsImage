@@ -12,6 +12,7 @@ import { LayerPanel } from './LayerPanel';
 import { PaletteIoPanel } from './PaletteIoPanel';
 import { PalettePanel } from './PalettePanel';
 import { PreprocessPanel } from './PreprocessPanel';
+import { ProjectPanel } from './ProjectPanel';
 import { AssistsPanel } from './AssistsPanel';
 import { Row, Section } from './Section';
 
@@ -52,8 +53,8 @@ const MILESTONES: { id: string; label: string; state: MileState }[] = [
   { id: 'M3', label: '调色板引擎', state: 'done' },
   { id: 'M4', label: '智能辅助', state: 'done' },
   { id: 'M5', label: '批量处理', state: 'done' },
-  { id: 'M6', label: '导出扩展', state: 'doing' },
-  { id: 'M7', label: '打磨与存档', state: 'todo' },
+  { id: 'M6', label: '导出扩展', state: 'done' },
+  { id: 'M7', label: '打磨与存档', state: 'doing' },
 ];
 
 /* --------------------------------------------------------------- 面板 */
@@ -70,6 +71,7 @@ export function SidePanel(): JSX.Element {
   const preprocessActive = useApp((s) => !isPreprocessIdentity(s.settings.preprocess));
   const batchTotal = useApp((s) => s.batchItems.length);
   const batchDone = useApp((s) => s.batchItems.filter((i) => i.status === 'done').length);
+  const presetCount = useApp((s) => s.convertPresets.length);
 
   const sourceBytes = source
     ? source.imageData.width * source.imageData.height * 4 +
@@ -108,6 +110,10 @@ export function SidePanel(): JSX.Element {
           badge={converting ? <span className="badge">计算中</span> : undefined}
         >
           <ConvertPanel />
+        </Section>
+
+        <Section title="转换预设" defaultOpen={false} badge={presetCount > 0 ? <span className="badge">{presetCount}</span> : undefined}>
+          <ProjectPanel />
         </Section>
 
         <Section

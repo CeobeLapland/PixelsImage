@@ -60,6 +60,12 @@ export function useShortcuts(): void {
       }
 
       switch (key) {
+        case '?':
+        case '/':
+          // 顺手也认 '/'：中文输入法下打 '?' 常常要先切英文，多给一个入口
+          event.preventDefault();
+          store.setShortcutsOpen(!store.shortcutsOpen);
+          break;
         case '[':
           event.preventDefault();
           store.setBrushSize(store.brushSize - 1);

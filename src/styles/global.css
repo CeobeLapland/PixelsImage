@@ -581,6 +581,51 @@ button:disabled {
   color: #e88a6e;
 }
 
+/* 空状态里的按钮对：导入 与 打开存档 */
+.dropzone__actions {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+}
+
+/* 首次使用的三步引导。用有序列表而不是三段说明文字：
+   新用户最需要的是「先做什么」，编号比段落更有行动指令感 */
+.dropzone__steps {
+  margin: 20px 0 0;
+  padding: 12px 14px;
+  list-style: none;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg-inset);
+  text-align: left;
+  counter-reset: step;
+}
+
+.dropzone__steps li {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  padding: 4px 0;
+  font-size: 11.5px;
+  color: var(--ink-dim);
+  line-height: 1.55;
+}
+
+.dropzone__steps b {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-line);
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 500;
+}
+
 /* 解码中 */
 .decoding {
   position: absolute;

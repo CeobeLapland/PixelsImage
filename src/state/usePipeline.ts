@@ -23,7 +23,8 @@ export function usePipelineRunner(): void {
     const runner = getPipelineRunner();
     const unsubscribe = runner.subscribe(
       (outcome) => {
-        useApp.getState().applyResult(outcome.grid, outcome.palette, {
+        const state = useApp.getState();
+        state.applyResult(outcome.grid, outcome.palette, {
           targetW: outcome.targetW,
           targetH: outcome.targetH,
           usedColors: outcome.usedColors,
@@ -31,6 +32,11 @@ export function usePipelineRunner(): void {
           ms: outcome.ms,
           fallback: outcome.fallback,
         });
+        // 降级状态可能因为 Worker 崩掉而变化，每次有结果就同步一次；
+        // 状态栏据此提示「已降级」，免得用户以为只是「变卡了」
+        if (state.workerFallback !== runner.isFallback) {
+          useApp.setState({ workerFallback: runner.isFallback });
+        }
       },
       (message) => {
         useApp.getState().setConvertError(message);

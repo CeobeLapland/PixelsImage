@@ -453,6 +453,43 @@ interface Exporter {
 store 模式的 ZIP 结构（本地头 + 中央目录 + 尾部记录）一百多行能写对，而且能被单测直接回读校验。
 代价明确写在这里：只支持单卷、单条目 < 4GB、不支持 zip64 与加密 —— 对「一次几十张 PNG」足够。
 
+### 7.2 存档与持久化（M7）
+
+两套机制，各管一段，不要混用：
+
+| 机制 | 存什么 | 存在哪 | 什么时候写 |
+| --- | --- | --- | --- |
+| `.pixproj` 存档 | **一份工作**：源图 + 参数 + 调色板 + baseGrid + 编辑层 | 用户下载的文件 | 显式点「存档」 |
+| localStorage | **长期偏好**：自定义调色板、批处理预设、转换预设、导出选项、方块映射 | 浏览器本地 | 每次改动即写 |
+
+为什么不做「自动保存当前工作到 localStorage」：刷新页面后悄悄回来一张图，
+用户会以为自己没关掉它 —— 而如果是别人的电脑，那就是意外泄露。显式存档更符合直觉。
+
+`.pixproj` 的结构（JSON）：
+
+```ts
+{
+  version: 2, savedAt, name,
+  source: string,              // 内嵌源图：导入时的原始字节，data URL
+  originalWidth, originalHeight,
+  settings: ConvertSettings,
+  palette: Palette,
+  baseGrid: { w, h, indices: number[], alpha: number[] } | null,
+  edit:     { w, h, rows: number[], index: number[], alpha: number[] } | null
+}
+```
+
+**源图内嵌而不存引用**：浏览器不允许序列化本地文件路径，File System Access API 又要重新授权。
+存引用的话，第二天打开存档第一件事是「请重新选择原图」—— 那这个存档基本等于没用。
+所以存**导入时的原始字节**（JPEG 原样存，不重新编码成 PNG：对照片能小 3–5 倍）。
+
+**编辑层用 CSR 三数组稀疏存**：512×512 的编辑层直接 JSON 要 26 万个 `null` 字面量，
+而手改通常只有几百格，稀疏存能小三个数量级。
+
+**校验从严**：`edit` / `baseGrid` / `palette` 各自独立校验，任一段坏掉只丢那一段并明确提示。
+但**读取时先清空再写入**是关键顺序 —— `loadSource` 内部会 `clearResult`（换图必须作废旧结果），
+编辑层写在它之前就会被一起清掉，而且表现是「画面只是少了手改」，不报错不提示。
+
 ---
 
 ## 8. 性能策略
@@ -529,8 +566,13 @@ store 模式的 ZIP 结构（本地头 + 中央目录 + 尾部记录）一百多
 | 名称模板的未知占位符原样保留（M6） | 静默换成空串会产出 `_.png`，用户看不出是自己模板写错了 |
 | 导出器默认选项都能直接跑通 | 每个导出器用它自己的默认值实跑一遍，断言产出非空文件。避免「schema 加了选项但 run 里没读」这类空产 |
 | 调色板映射表按 hex 键而不是槽位（M6） | 排序 / 合并会改变槽位顺序，按序号存的映射会整体错位且毫无提示 |
+| 存档往返：手改必须还在（M7 验收项） | `loadSource` 内部会 `clearResult`，编辑层写在它之前会被清掉，而表现只是「画面少了手改」——不报错、不提示。这条测试直接跑完整的读档路径 |
+| 存档摘要字段错一个就整段作废 | 三个数组长度不一致 / 下标越界 / 尺寸非法一律返回 null：读进一半比整段作废更危险，用户不知道少了哪几格 |
+| 存档的 source 必须是 data URL | 存成文件路径的话在浏览器里根本拿不回来，属于「写出来能读、读回去没用」的假格式 |
+| 大网格网格线降采样 | 两条早退分支：格边长太小不画（否则一片摩尔纹）、可见线数超上限整体放弃。上限按**屏幕上可见**的线数算，不是网格总列数 —— 一张 1000 列的图放大后只有几十条可见线，那种情况该照画 |
+| 预设的 preprocess 深拷贝 | 浅拷贝会让「改当前参数」把已存的预设一起改掉，而预设本该是快照 |
 
-测试规模：`npm test` 覆盖 571 个用例。
+测试规模：`npm test` 覆盖 620 个用例。
 
 运行：`npm test`（或 `npm run test:watch`）。
 
@@ -557,6 +599,8 @@ src/
 │   ├── pipeline.ts             串起完整转换，导出 convert(source, settings) → PixelGrid
 │   ├── composite.ts            baseGrid ⊕ editLayer → 最终 PixelGrid（含复用缓冲的变体）  ✅
 │   ├── edit.ts                 编辑层读写、尺寸重采样、选区搬运、撤销记账                  ✅
+│   ├── project.ts              .pixproj 存档：序列化、校验、稀疏编辑层                  ✅
+│   ├── presets.ts              转换预设的数据与校验（落盘在 store 里）                  ✅
 │   ├── workers/
 │   │   └── pipeline.worker.ts  Worker 入口
 │   ├── tools/                  铅笔/橡皮/油漆桶/吸管/直线/矩形/椭圆/选区               ✅
@@ -588,11 +632,12 @@ src/
 │   └── ops.ts                  排序、合并近似色、索引重映射
 │
 ├── state/
-│   ├── store.ts                Zustand store（source / convert / settings / edit / palette / assist / batch / export / tool / ui）  ✅
+│   ├── store.ts                Zustand store（source / convert / settings / edit / palette / assist / batch / export / project / tool / ui）  ✅
 │   ├── history.ts              撤销栈（纯函数，可直接单测）                            ✅
 │   ├── paint.ts                笔画控制器：指针事件 → 工具 → 编辑层 + 撤销栈            ✅
 │   ├── batch.ts                批量执行器（独立 Worker）+ zip 打包组装                 ✅
-│   ├── useShortcuts.ts         全局快捷键                                            ✅
+│   ├── useShortcuts.ts         全局快捷键（含 ? 唤起快捷键面板）                       ✅
+│   ├── usePipeline.ts          单图转换流水线的驱动（含降级状态同步）                   ✅
 │   ├── presets.ts              转换预设的持久化（localStorage）
 │   └── project.ts              .pixproj 读写（settings + palette + editLayer + source 引用）
 │
@@ -615,10 +660,11 @@ src/
 │   ├── AssistsPanel.tsx        描边、明暗分层、平铺预览与接缝检查                     ✅
 │   ├── ComparePanel.tsx        原图对照：并排 / 侧滑分割 / 叠加                      ✅
 │   ├── LayerPanel.tsx          工具参数、撤销历史、编辑层清空、原图叠加                ✅
-│   ├── ExportPanel.tsx         导出参数与执行（PNG）                                 ✅
+│   ├── ExportPanel.tsx         导出参数与执行（注册表驱动）                            ✅
 │   ├── convertOptions.ts       采样/距离/抖动等选项表（转换面板与批量面板共用）        ✅
 │   ├── BatchPanel.tsx          批量队列、逐项覆盖、命名模板、打包导出、预设            ✅
-│   └── shortcuts/ShortcutsHelp.tsx  快捷键帮助面板                  （M7）
+│   ├── ProjectPanel.tsx        转换预设与存档状态                                      ✅
+│   └── ShortcutsHelp.tsx       快捷键帮助面板（? 唤起）                               ✅
 │
 └── styles/
     └── global.css              暗色主题 CSS 变量与全部组件样式                        ✅
@@ -692,6 +738,16 @@ src/
 | 56 | 蓝图 Y 轴默认方向 | 图上第一行 → y 最大 | 图片第一行是上面，MC 里 y 越大越高；照搬格坐标会让人把模型上下搭反 |
 | 57 | 多文件导出 | 默认打包成 zip，复用 M5 的 ZIP 写入器 | 分页蓝图一导就是好几张，连续下载会被浏览器当可疑行为拦下 |
 | 58 | 图例区的宽度 | 参与画布宽度计算（可能反过来撑宽画布） | 小图时只按网格宽度算列数，方块名会被画布边缘裁掉 —— 那正是图纸最有用的部分 |
+| 59 | 存档要不要内嵌源图 | 内嵌（导入时的原始字节） | 浏览器记不住本地文件路径，存引用等于每次打开都要重选一次原图 |
+| 60 | 存原始字节还是重编码 PNG | 原始字节 | JPEG 原样存比「解码后再编码成 PNG」小 3–5 倍；反正解码在浏览器里很快 |
+| 61 | 编辑层在存档里的形式 | 三数组 CSR 稀疏 | 直接 JSON 存 `(PixelCell\|null)[]` 要 26 万个 null 字面量，稀疏能小三个数量级 |
+| 62 | 读档时重算还是用存档的网格 | 用存档的 `baseGrid`，不重算 | 重算是异步的，编辑层会在结果到达前被判为「尺寸不符」而重建 → 手改静默丢失 |
+| 63 | 读档的写入顺序 | 先 `loadSource`（内部 clearResult），后写编辑层 | 顺序反了编辑层会被 clearResult 一起清掉，而表现只是「画面少了手改」 |
+| 64 | 存档校验的粒度 | 分三段独立校验，坏哪段丢哪段 | 编辑层坏了不该让整份存档打不开；但也绝不「读进一半」——那会让用户不知道少了哪几格 |
+| 65 | 要不要自动把当前工作存进 localStorage | 不要 | 刷新后悄悄回来一张图，会让人以为没关掉；显式存档 + 长期偏好自动存，分工清楚 |
+| 66 | 离线构建的字体 | 去掉 Google Fonts 外链 | 离线版留一行外链请求等于自己拆台；CSS 里本来就写了系统字体 fallback |
+| 67 | 离线构建的形式 | JS/CSS 全部内联进单个 index.html | 浏览器拦的是「从 file:// fetch 外部 module 脚本」，内联脚本不受限 |
+| 68 | 离线版放弃 Worker | 接受（状态栏明确显示「已降级 主线程」） | file:// 下拉不到独立 worker 文件。功能全在，只是拖参数略卡；把这个代价写进 README 而不是藏起来 |
 
 ### 关于决策 12 的踩坑记录
 

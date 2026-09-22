@@ -29,6 +29,7 @@ export function StatusBar(): JSX.Element {
   const batchTotal = useApp((s) => s.batchItems.length);
   const batchDone = useApp((s) => s.batchItems.filter((i) => i.status === 'done').length);
   const batchRunning = useApp((s) => s.batchRunning);
+  const workerFallback = useApp((s) => s.workerFallback);
 
   const original = source ? `${source.originalWidth}×${source.originalHeight}` : '—';
   const working = source ? `${source.imageData.width}×${source.imageData.height}` : '—';
@@ -125,7 +126,15 @@ export function StatusBar(): JSX.Element {
           <span className="status__sep" />
         </>
       )}
-      <span className="status__item">M6 · 导出扩展</span>
+      {workerFallback && (
+        <>
+          <span className="status__item status__item--accent" title="Web Worker 不可用，转换已改在主线程执行，拖参数时会略卡">
+            已降级 <b>主线程</b>
+          </span>
+          <span className="status__sep" />
+        </>
+      )}
+      <span className="status__item">M7 · 打磨与存档</span>
     </footer>
   );
 }
