@@ -1,6 +1,7 @@
 import { useEffect, type JSX } from 'react';
 
 import { useApp } from '@/state/store';
+import { usePipelineRunner } from '@/state/usePipeline';
 import { AppHeader } from './components/AppHeader';
 import { SidePanel } from './components/SidePanel';
 import { Stage } from './components/Stage';
@@ -9,6 +10,9 @@ import { Toasts } from './components/Toasts';
 import { ToolRail } from './components/ToolRail';
 
 export default function App(): JSX.Element {
+  // 转换流水线的驱动：源图 / 参数变化 → Worker → 结果写入 store
+  usePipelineRunner();
+
   /* 面板折叠：Tab 换取更大的画布 */
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {

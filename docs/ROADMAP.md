@@ -12,7 +12,7 @@
 | 里程碑 | 主题 | 状态 |
 | --- | --- | --- |
 | M0 | 工程骨架与导入 | ✅ 已完成 |
-| M1 | 转换引擎（核心） | ⬜ 未开始 |
+| M1 | 转换引擎（核心） | ✅ 已完成 |
 | M2 | 像素编辑器 | ⬜ 未开始 |
 | M3 | 调色板引擎 | ⬜ 未开始 |
 | M4 | 智能辅助 | ⬜ 未开始 |
@@ -50,23 +50,31 @@
 
 **目标**：左边原图，右边实时出 Minecraft 风格像素图，参数全部可调。
 
-- [ ] `core/sampling.ts`：`nearest` / `area`（含非整数倍的部分覆盖权重）
-- [ ] `core/color/space.ts`：hex ↔ RGB ↔ LAB
-- [ ] `core/color/distance.ts`：`rgb` / `weighted` / `lab` + 5bit 查找缓存表
-- [ ] `core/color/quantize.ts`：最近色映射主循环
-- [ ] `core/color/dither.ts`：`bayer2/4/8` 阈值矩阵
-- [ ] 误差扩散：`floyd` / `atkinson` / `sierra`，与量化同循环实现
-- [ ] `palettes/builtin.ts`：先落 Minecraft 16 染料色
-- [ ] `core/pipeline.ts`：串起完整流水线，纯函数 `convert(imageData, settings) → PixelGrid`
-- [ ] `core/workers/pipeline.worker.ts` + 主线程调用封装（transferable 传递）
-- [ ] `ConvertPanel.tsx`：目标格数、采样方式、调色板、距离度量、抖动算法、抖动强度
-- [ ] 拖动滑块时的降级策略（强制 `weighted`，`pointerup` 后跑完整精度）
-- [ ] `core/exporters/png.ts`：1x 与 Nx 整数倍最近邻放大导出
+- [x] `core/sampling.ts`：`nearest` / `area`（含非整数倍的部分覆盖权重）/ `dominant` / `median`
+- [x] `core/color/space.ts`：hex ↔ RGB ↔ LAB
+- [x] `core/color/distance.ts`：`rgb` / `weighted` / `lab` + 5bit 查找缓存表
+- [x] `core/color/quantize.ts`：最近色映射主循环
+- [x] `core/color/dither.ts`：`bayer2/4/8` 阈值矩阵
+- [x] 误差扩散：`floyd` / `atkinson` / `sierra`，与量化同循环实现
+- [x] `palettes/builtin.ts`：Minecraft 16 染料色 + 灰阶 8 级 + 黑白 2 色
+- [x] `core/pipeline.ts`：串起完整流水线，纯函数 `convert(imageData, settings) → PixelGrid`
+- [x] `core/workers/pipeline.worker.ts` + 主线程调用封装（transferable 传递、请求合并）
+- [x] `ConvertPanel.tsx`：目标格数、采样方式、调色板、距离度量、抖动算法、抖动强度、预处理
+- [x] 拖动滑块时的降级策略（强制 `weighted`，松手后跑完整精度）
+- [x] `core/exporters/png.ts`：1x 与 Nx 整数倍最近邻放大导出
+- [x] `core/preprocess.ts`：亮度/对比度/饱和度/锐化/alpha 阈值（原本排在 M4，因为参数必须在下采样前生效，提前到 M1）
+- [x] 对比视图：侧滑分割 / 并排 / 仅结果 / 仅原图（原计划只做前两种）
 
 **验收**：
 - 拖入照片 → 设 32×32 + Minecraft 调色板 + Atkinson → 得到正确的方块感像素图；
 - 拖动尺寸/抖动滑块预览流畅（不出现明显掉帧）；
 - 导出的 1x PNG 在 Photoshop 里放大后是干净硬边，无插值模糊。
+
+**已知修复**（浏览器实测发现）：
+- 切换调色板到更小的板（16 → 8 → 2 色）时崩溃。根因是模块级共享的 5bit 查找缓存
+  未随调色板失效，旧索引越界。已改为每次转换新建缓存，见 DESIGN.md 决策 12。
+- `dominant` 采样的直方图 `touched` 列表容量不足（4096），大格子里颜色超过这个数时
+  会漏投票并偏向先扫到的颜色。已改为与直方图等长。
 
 ---
 

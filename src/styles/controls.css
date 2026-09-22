@@ -1,0 +1,337 @@
+/* ============================================================================
+   面板控件样式：滑块 / 分段选择 / 下拉 / 数字输入 / 色板 / 分割线
+   ========================================================================== */
+
+/* ------------------------------------------------------------------ 字段行 */
+
+.field {
+  margin: 9px 0;
+}
+
+.field__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 5px;
+}
+
+.field__label {
+  color: var(--ink-dim);
+  font-size: 11.5px;
+}
+
+.field__hint {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--accent);
+  letter-spacing: 0.02em;
+}
+
+/* ------------------------------------------------------------------ 滑块 */
+
+.slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 16px;
+  background: transparent;
+  cursor: ew-resize;
+  display: block;
+}
+
+.slider:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.slider::-webkit-slider-runnable-track {
+  height: 2px;
+  border-radius: 2px;
+  background: var(--line-strong);
+}
+
+.slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 10px;
+  height: 14px;
+  margin-top: -6px;
+  border-radius: 2px;
+  background: var(--ink-dim);
+  border: 1px solid var(--bg-panel);
+  transition: background var(--dur) var(--ease);
+}
+
+.slider:hover::-webkit-slider-thumb {
+  background: var(--accent);
+}
+
+.slider:active::-webkit-slider-thumb {
+  background: var(--accent);
+}
+
+.slider::-moz-range-track {
+  height: 2px;
+  border-radius: 2px;
+  background: var(--line-strong);
+}
+
+.slider::-moz-range-thumb {
+  width: 9px;
+  height: 13px;
+  border-radius: 2px;
+  background: var(--ink-dim);
+  border: 1px solid var(--bg-panel);
+}
+
+.slider:hover::-moz-range-thumb {
+  background: var(--accent);
+}
+
+/* ------------------------------------------------------------- 分段选择 */
+
+.seg {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+
+.seg[data-grid='true'] {
+  display: grid;
+}
+
+.seg__item {
+  min-width: 0;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg-inset);
+  color: var(--ink-faint);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease),
+    border-color var(--dur) var(--ease);
+}
+
+.seg__item:hover:not(:disabled) {
+  background: var(--bg-raised);
+  color: var(--ink-dim);
+}
+
+.seg__item[aria-checked='true'] {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+
+.seg__item:disabled {
+  opacity: 0.35;
+}
+
+/* ------------------------------------------------------------------ 下拉 */
+
+.select {
+  width: 100%;
+  height: 26px;
+  padding: 0 26px 0 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg-inset);
+  color: var(--ink);
+  font: inherit;
+  font-size: 11.5px;
+  appearance: none;
+  cursor: pointer;
+  /* 自绘箭头，避免各平台原生控件外观不一 */
+  background-image: linear-gradient(45deg, transparent 50%, var(--ink-faint) 50%),
+    linear-gradient(135deg, var(--ink-faint) 50%, transparent 50%);
+  background-position: calc(100% - 14px) 11px, calc(100% - 9px) 11px;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+
+.select:hover {
+  border-color: var(--line-strong);
+}
+
+.select:focus {
+  outline: none;
+  border-color: var(--accent-line);
+}
+
+.select:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ------------------------------------------------------------- 数字输入 */
+
+.numberfield__input {
+  width: 100%;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg-inset);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+
+.numberfield__input:hover {
+  border-color: var(--line-strong);
+}
+
+.numberfield__input:focus {
+  outline: none;
+  border-color: var(--accent-line);
+}
+
+/* ------------------------------------------------------------------ 快捷档 */
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 7px 0 3px;
+}
+
+.chip {
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 99px;
+  background: transparent;
+  color: var(--ink-faint);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease),
+    border-color var(--dur) var(--ease);
+}
+
+.chip:hover {
+  color: var(--ink-dim);
+  border-color: var(--line-strong);
+}
+
+.chip[aria-pressed='true'] {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+
+/* ------------------------------------------------------------------ 色板 */
+
+.swatches {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 3px;
+  margin: 10px 0 8px;
+}
+
+.swatch {
+  position: relative;
+  aspect-ratio: 1;
+  border-radius: 2px;
+  border: 1px solid rgba(0, 0, 0, 0.45);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+  transition: transform var(--dur) var(--ease);
+}
+
+.swatch:hover {
+  transform: scale(1.12);
+  z-index: 2;
+  box-shadow: 0 0 0 1px var(--accent), 0 2px 6px rgba(0, 0, 0, 0.5);
+}
+
+.swatch__copied {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(8, 9, 11, 0.82);
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  letter-spacing: 0.04em;
+  border-radius: 2px;
+}
+
+/* ------------------------------------------------------------ 整宽按钮 */
+
+.btn--block {
+  width: 100%;
+  justify-content: center;
+  margin-top: 10px;
+}
+
+.btn--primary {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.btn--primary:hover:not(:disabled) {
+  background: rgba(233, 168, 60, 0.24);
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* ------------------------------------------------------------ 对照分割线 */
+
+.viewport--static {
+  cursor: default;
+}
+
+.splitter {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 18px;
+  margin-left: -9px;
+  cursor: ew-resize;
+  z-index: 8;
+  display: grid;
+  place-items: center;
+  touch-action: none;
+}
+
+.splitter__grip {
+  width: 3px;
+  height: 46px;
+  border-radius: 2px;
+  background: var(--accent);
+  box-shadow: 0 0 0 1px rgba(8, 9, 11, 0.6), 0 0 10px var(--accent-line);
+  transition: height var(--dur) var(--ease);
+}
+
+.splitter:hover .splitter__grip {
+  height: 66px;
+}
+
+/* 分割线两端的箭头提示 */
+.splitter::before,
+.splitter::after {
+  content: '';
+  position: absolute;
+  width: 0;
+  height: 0;
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+}
+
+.splitter::before {
+  left: 1px;
+  border-right: 5px solid var(--accent);
+  opacity: 0.75;
+}
+
+.splitter::after {
+  right: 1px;
+  border-left: 5px solid var(--accent);
+  opacity: 0.75;
+}

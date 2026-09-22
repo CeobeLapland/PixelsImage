@@ -10,6 +10,17 @@
 /** 调色板中的一个颜色，0-255 */
 export type RGBA = readonly [r: number, g: number, b: number, a: number];
 
+/**
+ * 轻量 RGBA 图像缓冲。
+ * 不用 ImageData 类型是为了能在 Web Worker 中安全使用（ImageData 在部分环境不可构造）；
+ * 浏览器的 ImageData 结构上兼容此接口，可直接传入。
+ */
+export interface RGBAImage {
+  readonly width: number;
+  readonly height: number;
+  readonly data: Uint8ClampedArray;
+}
+
 export type PaletteSource = 'builtin' | 'extracted' | 'imported';
 
 export interface Palette {

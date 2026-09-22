@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useRef, useState, type JSX, type PointerEvent as ReactPointerEvent } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type JSX,
+  type PointerEvent as ReactPointerEvent,
+} from 'react';
 
 import type { SourceImage } from '@/core/types';
 import { useApp } from '@/state/store';
@@ -118,17 +125,22 @@ export function Viewport({ source }: { source: SourceImage }): JSX.Element {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const panRef = useRef<PanSession | null>(null);
   const needFitRef = useRef(true);
-
   const [panning, setPanning] = useState(false);
   const [box, setBox] = useState({ w: 0, h: 0 });
+  const [splitDragging, setSplitDragging] = useState(false);
 
   const view = useApp((s) => s.view);
   const showGrid = useApp((s) => s.showGrid);
+  const mode = useApp((s) => s.compareMode);
+  const splitPos = useApp((s) => s.splitPos);
+  const resultBitmap = useApp((s) => s.resultBitmap);
+  const resultGrid = useApp((s) => s.baseGrid);
 
   const previewW = source.previewBitmap.width;
   const previewH = source.previewBitmap.height;
 
-  /* 尺寸跟随容器 */
+  /* ------------------------------------------------------ 尺寸与视图 */
+
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -139,7 +151,6 @@ export function Viewport({ source }: { source: SourceImage }): JSX.Element {
     return () => ro.disconnect();
   }, []);
 
-  /* 适配窗口 */
   const fit = useCallback(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -158,7 +169,6 @@ export function Viewport({ source }: { source: SourceImage }): JSX.Element {
     });
   }, [previewW, previewH]);
 
-  /* 换图后请求一次适配（等容器量到尺寸再执行） */
   useEffect(() => {
     needFitRef.current = true;
   }, [source]);
@@ -169,7 +179,6 @@ export function Viewport({ source }: { source: SourceImage }): JSX.Element {
     fit();
   }, [box.w, box.h, fit]);
 
-  /* 以视口中心为锚点缩放 */
   const zoomBy = useCallback((factor: number) => {
     const el = containerRef.current;
     if (!el) return;
@@ -180,14 +189,9 @@ export function Viewport({ source }: { source: SourceImage }): JSX.Element {
     if (next === zoom) return;
     const ix = (cx - panX) / zoom;
     const iy = (cy - panY) / zoom;
-    useApp.getState().setView({
-      zoom: next,
-      panX: cx - ix * next,
-      panY: cy - iy * next,
-    });
+    useApp.getState().setView({ zoom: next, panX: cx - ix * next, panY: cy - iy * next });
   }, []);
 
-  /* 1:1 原尺寸并居中 */
   const zoomTo100 = useCallback(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -198,7 +202,8 @@ export function Viewport({ source }: { source: SourceImage }): JSX.Element {
     });
   }, [previewW, previewH]);
 
-  /* 光标位置 → 源像素坐标 */
+  /* ------------------------------------------------------ 光标读数 */
+
   const reportCursor = useCallback(
     (clientX: number, clientY: number) => {
       const el = containerRef.current;
@@ -217,7 +222,8 @@ export function Viewport({ source }: { source: SourceImage }): JSX.Element {
     [previewW, previewH, source.previewScale],
   );
 
-  /* 滚轮缩放：以光标为锚点。需要非被动监听才能 preventDefault */
+  /* ------------------------------------------------------ 滚轮缩放 */
+
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -231,17 +237,14 @@ export function Viewport({ source }: { source: SourceImage }): JSX.Element {
       if (next === zoom) return;
       const ix = (mx - panX) / zoom;
       const iy = (my - panY) / zoom;
-      useApp.getState().setView({
-        zoom: next,
-        panX: mx - ix * next,
-        panY: my - iy * next,
-      });
+      useApp.getState().setView({ zoom: next, panX: mx - ix * next, panY: my - iy * next });
     };
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
   }, []);
 
-  /* 视图快捷键：0 = 适配窗口，1 = 1:1，+/- = 缩放 */
+  /* ------------------------------------------------------ 快捷键 */
+
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
@@ -269,9 +272,41 @@ export function Viewport({ source }: { source: SourceImage }): JSX.Element {
     return () => window.removeEventListener('keydown', onKey);
   }, [fit, zoomBy, zoomTo100]);
 
-  /* 平移拖拽 */
+  /* ------------------------------------------------------ 分割线拖拽 */
+
+  const splitFromClientX = useCallback((clientX: number) => {
+    const el = containerRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    useApp.getState().setSplitPos((clientX - rect.left) / rect.width);
+  }, []);
+
+  const onSplitDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    event.stopPropagation();
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setSplitDragging(true);
+    splitFromClientX(event.clientX);
+  };
+
+  const onSplitMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!splitDragging) return;
+    event.stopPropagation();
+    splitFromClientX(event.clientX);
+  };
+
+  const onSplitUp = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!splitDragging) return;
+    event.stopPropagation();
+    setSplitDragging(false);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  };
+
+  /* ------------------------------------------------------ 平移 */
+
   const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
-    // M0 左键暂时用于平移；M2 起左键交给绘图工具，平移改用中键 / 空格
     if (event.button !== 0 && event.button !== 1) return;
     const { panX, panY } = useApp.getState().view;
     panRef.current = {
@@ -306,7 +341,8 @@ export function Viewport({ source }: { source: SourceImage }): JSX.Element {
     }
   };
 
-  /* 绘制 */
+  /* ------------------------------------------------------ 绘制 */
+
   useEffect(() => {
     const canvas = canvasRef.current;
     const el = containerRef.current;
@@ -324,16 +360,107 @@ export function Viewport({ source }: { source: SourceImage }): JSX.Element {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, cw, ch);
 
+    const hasResult = resultBitmap !== null && resultGrid !== null;
+
+    /* ---- 并排模式：各占一半，各自适配 ---- */
+    if (mode === 'sideBySide' && hasResult) {
+      const gap = 12;
+      const halfW = (cw - gap * 2) / 2;
+
+      const drawFitted = (
+        bitmap: ImageBitmap | null,
+        gw: number | null,
+        x: number,
+        y: number,
+        w: number,
+        h: number,
+        pixelated: boolean,
+      ) => {
+        const iw = gw ?? previewW;
+        const ih = gw !== null && resultGrid ? resultGrid.h : previewH;
+        const k = Math.min(w / iw, h / ih);
+        const dw = iw * k;
+        const dh = ih * k;
+        const dx = x + (w - dw) / 2;
+        const dy = y + (h - dh) / 2;
+        drawChecker(ctx, dx, dy, dw, dh, cw, ch);
+        if (bitmap) {
+          ctx.imageSmoothingEnabled = !pixelated && k < 1;
+          ctx.drawImage(bitmap, dx, dy, dw, dh);
+        }
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = 'rgba(124,140,162,0.45)';
+        ctx.strokeRect(
+          Math.round(dx) - 0.5,
+          Math.round(dy) - 0.5,
+          Math.round(dw) + 1,
+          Math.round(dh) + 1,
+        );
+      };
+
+      drawFitted(source.previewBitmap, null, gap, gap, halfW, ch - gap * 2, false);
+      drawFitted(resultBitmap, resultGrid?.w ?? null, gap * 2 + halfW, gap, halfW, ch - gap * 2, true);
+
+      ctx.fillStyle = 'rgba(140,151,166,0.85)';
+      ctx.font = '10px ui-monospace, monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText('原图', gap + halfW / 2, 12);
+      ctx.fillText(
+        `像素图 ${resultGrid?.w ?? 0}×${resultGrid?.h ?? 0}`,
+        gap * 2 + halfW + halfW / 2,
+        12,
+      );
+      return;
+    }
+
+    /* ---- 共用视图：侧滑分割 / 仅结果 / 仅原图 ---- */
     const dw = previewW * view.zoom;
     const dh = previewH * view.zoom;
     const x = view.panX;
     const y = view.panY;
 
+    const showSourceOnly = mode === 'source' || !hasResult;
+
     drawChecker(ctx, x, y, dw, dh, cw, ch);
 
-    ctx.imageSmoothingEnabled = view.zoom < 1;
-    ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(source.previewBitmap, x, y, dw, dh);
+    if (mode === 'result' && hasResult) {
+      // 只看结果：整块都画结果
+      const cellSize = dw / resultGrid.w;
+      ctx.imageSmoothingEnabled = cellSize < 1;
+      ctx.drawImage(resultBitmap, x, y, dw, dh);
+    } else if (mode === 'split' && hasResult) {
+      const splitX = splitPos * cw;
+
+      // 左半：原图
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(0, 0, splitX, ch);
+      ctx.clip();
+      ctx.imageSmoothingEnabled = view.zoom < 1;
+      ctx.drawImage(source.previewBitmap, x, y, dw, dh);
+      ctx.restore();
+
+      // 右半：结果
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(splitX, 0, cw - splitX, ch);
+      ctx.clip();
+      const cellSize = dw / resultGrid.w;
+      ctx.imageSmoothingEnabled = cellSize < 1;
+      ctx.drawImage(resultBitmap, x, y, dw, dh);
+      ctx.restore();
+
+      // 分割线
+      ctx.strokeStyle = 'rgba(233,168,60,0.9)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(Math.round(splitX) + 0.5, 0);
+      ctx.lineTo(Math.round(splitX) + 0.5, ch);
+      ctx.stroke();
+    } else if (showSourceOnly) {
+      ctx.imageSmoothingEnabled = view.zoom < 1;
+      ctx.drawImage(source.previewBitmap, x, y, dw, dh);
+    }
 
     // 图像边界
     ctx.lineWidth = 1;
@@ -348,34 +475,76 @@ export function Viewport({ source }: { source: SourceImage }): JSX.Element {
     if (showGrid && view.zoom >= GRID_MIN_ZOOM) {
       drawSourceGrid(ctx, x, y, previewW, previewH, view.zoom, cw, ch);
     }
-  }, [source, view, showGrid, box.w, box.h, previewW, previewH]);
+  }, [
+    source,
+    view,
+    showGrid,
+    box.w,
+    box.h,
+    previewW,
+    previewH,
+    mode,
+    splitPos,
+    resultBitmap,
+    resultGrid,
+  ]);
+
+  const interactive = mode !== 'sideBySide';
 
   return (
     <div
       ref={containerRef}
-      className={`viewport${panning ? ' viewport--panning' : ''}`}
-      onPointerDown={onPointerDown}
-      onPointerMove={onPointerMove}
-      onPointerUp={endPan}
-      onPointerCancel={endPan}
+      className={`viewport${panning ? ' viewport--panning' : ''}${interactive ? '' : ' viewport--static'}`}
+      onPointerDown={interactive ? onPointerDown : undefined}
+      onPointerMove={interactive ? onPointerMove : undefined}
+      onPointerUp={interactive ? endPan : undefined}
+      onPointerCancel={interactive ? endPan : undefined}
       onPointerLeave={(event) => {
-        endPan(event);
+        if (interactive) endPan(event);
         useApp.getState().setCursor(null);
       }}
     >
       <canvas ref={canvasRef} className="viewport__canvas" />
+
+      {mode === 'split' && resultBitmap && (
+        <div
+          className="splitter"
+          style={{ left: `${splitPos * 100}%` }}
+          onPointerDown={onSplitDown}
+          onPointerMove={onSplitMove}
+          onPointerUp={onSplitUp}
+          onPointerCancel={onSplitUp}
+          role="separator"
+          aria-label="对照分割线"
+          aria-orientation="vertical"
+          aria-valuenow={Math.round(splitPos * 100)}
+        >
+          <span className="splitter__grip" />
+        </div>
+      )}
+
       <div className="viewport__hud">
         <span>
           缩放 <b>{view.zoom >= 1 ? view.zoom.toFixed(2) : view.zoom.toFixed(3)}×</b>
         </span>
         <span>·</span>
-        <span>滚轮缩放 · 拖拽平移</span>
+        <span>
+          {mode === 'split'
+            ? '左原图 / 右像素图'
+            : mode === 'result'
+              ? '仅像素图'
+              : mode === 'source'
+                ? '仅原图'
+                : '并排对照'}
+        </span>
       </div>
+
       <div className="viewport__controls">
         <button
           type="button"
           className="btn btn--icon"
           onClick={() => zoomBy(1 / 1.5)}
+          disabled={!interactive}
           title="缩小（-）"
           aria-label="缩小"
         >
@@ -385,15 +554,28 @@ export function Viewport({ source }: { source: SourceImage }): JSX.Element {
           type="button"
           className="btn btn--icon"
           onClick={() => zoomBy(1.5)}
+          disabled={!interactive}
           title="放大（+）"
           aria-label="放大"
         >
           +
         </button>
-        <button type="button" className="btn" onClick={fit} title="适配窗口（0）">
+        <button
+          type="button"
+          className="btn"
+          onClick={fit}
+          disabled={!interactive}
+          title="适配窗口（0）"
+        >
           适配
         </button>
-        <button type="button" className="btn" onClick={zoomTo100} title="原尺寸（1）">
+        <button
+          type="button"
+          className="btn"
+          onClick={zoomTo100}
+          disabled={!interactive}
+          title="原尺寸（1）"
+        >
           1:1
         </button>
       </div>

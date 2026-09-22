@@ -1,48 +1,12 @@
-import { useEffect, useRef, useState, type JSX, type ReactNode } from 'react';
+import { useEffect, useRef, type JSX } from 'react';
 
 import { formatBytes } from '@/core/image';
 import { useApp } from '@/state/store';
-
-/* --------------------------------------------------------------- 折叠分组 */
-
-interface SectionProps {
-  title: string;
-  badge?: ReactNode;
-  defaultOpen?: boolean;
-  children: ReactNode;
-}
-
-function Section({ title, badge, defaultOpen = true, children }: SectionProps): JSX.Element {
-  const [open, setOpen] = useState(defaultOpen);
-
-  return (
-    <section className="section">
-      <button
-        type="button"
-        className="section__head"
-        aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
-      >
-        <h2>{title}</h2>
-        {badge}
-      </button>
-      <div className="section__body" hidden={!open}>
-        {children}
-      </div>
-    </section>
-  );
-}
-
-function Row({ k, v, muted }: { k: string; v: ReactNode; muted?: boolean }): JSX.Element {
-  return (
-    <div className="kv">
-      <span className="kv__k">{k}</span>
-      <span className="kv__v" data-muted={muted ? 'true' : undefined}>
-        {v}
-      </span>
-    </div>
-  );
-}
+import { ComparePanel } from './ComparePanel';
+import { ConvertPanel } from './ConvertPanel';
+import { ExportPanel } from './ExportPanel';
+import { PalettePanel } from './PalettePanel';
+import { Row, Section } from './Section';
 
 /* --------------------------------------------------------------- 源图缩略 */
 
@@ -75,8 +39,8 @@ function SourceThumb(): JSX.Element {
 type MileState = 'done' | 'doing' | 'todo';
 
 const MILESTONES: { id: string; label: string; state: MileState }[] = [
-  { id: 'M0', label: '工程骨架与导入', state: 'doing' },
-  { id: 'M1', label: '转换引擎', state: 'todo' },
+  { id: 'M0', label: '工程骨架与导入', state: 'done' },
+  { id: 'M1', label: '转换引擎', state: 'doing' },
   { id: 'M2', label: '像素编辑器', state: 'todo' },
   { id: 'M3', label: '调色板引擎', state: 'todo' },
   { id: 'M4', label: '智能辅助', state: 'todo' },
@@ -89,10 +53,11 @@ const MILESTONES: { id: string; label: string; state: MileState }[] = [
 
 export function SidePanel(): JSX.Element {
   const source = useApp((s) => s.source);
-  const showGrid = useApp((s) => s.showGrid);
-  const setShowGrid = useApp((s) => s.setShowGrid);
-  const zoom = useApp((s) => s.view.zoom);
   const panelCollapsed = useApp((s) => s.panelCollapsed);
+  const info = useApp((s) => s.info);
+  const converting = useApp((s) => s.converting);
+  const convertError = useApp((s) => s.convertError);
+  const hasResult = useApp((s) => s.baseGrid !== null);
 
   const sourceBytes = source
     ? source.imageData.width * source.imageData.height * 4 +
@@ -109,19 +74,8 @@ export function SidePanel(): JSX.Element {
               <Row k="文件名" v={source.name} />
               <Row k="格式" v={source.type.replace('image/', '').toUpperCase()} muted />
               <Row k="文件大小" v={formatBytes(source.bytes)} muted />
-              <Row
-                k="原图尺寸"
-                v={`${source.originalWidth} × ${source.originalHeight}`}
-              />
-              <Row
-                k="源数据"
-                v={`${source.imageData.width} × ${source.imageData.height}`}
-              />
-              <Row
-                k="预览位图"
-                v={`${source.previewBitmap.width} × ${source.previewBitmap.height}`}
-                muted
-              />
+              <Row k="原图尺寸" v={`${source.originalWidth} × ${source.originalHeight}`} />
+              <Row k="源数据" v={`${source.imageData.width} × ${source.imageData.height}`} />
               <Row k="内存占用" v={`≈ ${formatBytes(sourceBytes)}`} muted />
               {source.truncated && (
                 <p className="note note--warn">
@@ -137,22 +91,34 @@ export function SidePanel(): JSX.Element {
           )}
         </Section>
 
-        <Section title="显示">
-          <button
-            type="button"
-            className="toggle"
-            aria-pressed={showGrid}
-            onClick={() => setShowGrid(!showGrid)}
-          >
-            <span className="toggle__track" />
-            <span>源像素网格</span>
-          </button>
-          <Row k="画布缩放" v={`${zoom >= 1 ? zoom.toFixed(2) : zoom.toFixed(3)}×`} />
-          <p className="note">
-            网格需要放大到 <b>8×</b> 以上才会绘制，否则会与像素本身产生摩尔纹。
-            快捷键：<b>0</b> 适配窗口，<b>1</b> 原尺寸。
-          </p>
+        <Section
+          title="转换"
+          badge={converting ? <span className="badge">计算中</span> : undefined}
+        >
+          <ConvertPanel />
         </Section>
+
+        <Section title="调色板" defaultOpen={false}>
+          <PalettePanel />
+        </Section>
+
+        <Section title="对照与显示">
+          <ComparePanel />
+        </Section>
+
+        <Section title="导出" badge={hasResult ? <span className="badge">就绪</span> : undefined}>
+          <ExportPanel />
+        </Section>
+
+        {hasResult && info && (
+          <Section title="转换结果" defaultOpen={false}>
+            <Row k="网格尺寸" v={`${info.targetW} × ${info.targetH}`} />
+            <Row k="实际用色" v={`${info.usedColors} 种`} />
+            <Row k="耗时" v={`${info.ms.toFixed(1)} ms`} muted />
+            {info.trimmed && <Row k="含裁剪" v="尺寸已收缩" muted />}
+            {convertError && <p className="note note--warn">{convertError}</p>}
+          </Section>
+        )}
 
         <Section title="实现进度" defaultOpen={false}>
           <ul className="milestones">
@@ -165,8 +131,8 @@ export function SidePanel(): JSX.Element {
             ))}
           </ul>
           <p className="note">
-            当前处于 <b>M0</b>：导入与查看已可用，转换引擎在 M1 接入。
-            绘图工具在工具栏中占位但未启用。
+            当前处于 <b>M1</b>：转换引擎已可用，参数改动实时重算（在 Web Worker 中执行）。
+            绘图工具在工具栏中占位但未启用，将在 M2 接入。
           </p>
         </Section>
       </div>

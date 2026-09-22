@@ -15,11 +15,14 @@
 import { create, type StateCreator } from 'zustand';
 
 import { isProbablyImage, loadSourceImage } from '@/core/image';
+import { DEFAULT_PALETTE_ID, resolvePalette } from '@/palettes/builtin';
 import {
   makeDefaultSettings,
   type ConvertSettings,
   type PreprocessSettings,
+  type Palette,
   type PixelDocument,
+  type PixelGrid,
   type SourceImage,
   type SymmetryMode,
   type ToolId,
@@ -43,6 +46,20 @@ export interface ViewTransform {
   panY: number;
 }
 
+/** 对比视图模式 */
+export type CompareMode = 'split' | 'sideBySide' | 'result' | 'source';
+
+/** 一次转换的产出信息 */
+export interface ConvertInfo {
+  targetW: number;
+  targetH: number;
+  usedColors: number;
+  trimmed: boolean;
+  ms: number;
+  /** 是否走了主线程降级路径 */
+  fallback: boolean;
+}
+
 export interface SourceSlice {
   source: SourceImage | null;
   sourceStatus: SourceStatus;
@@ -54,6 +71,25 @@ export interface SourceSlice {
 export interface DocSlice {
   doc: PixelDocument | null;
   setDoc: (doc: PixelDocument | null) => void;
+}
+
+/** 转换结果（M1）。编辑层在 M2 接入后会并入 PixelDocument。 */
+export interface ConvertSlice {
+  /** 当前调色板对象（由 settings.paletteId 解析得到） */
+  palette: Palette;
+  setPalette: (palette: Palette) => void;
+
+  baseGrid: PixelGrid | null;
+  /** 供 canvas 绘制的位图，与 baseGrid 同步更新 */
+  resultBitmap: ImageBitmap | null;
+  info: ConvertInfo | null;
+  converting: boolean;
+  convertError: string | null;
+
+  applyResult: (grid: PixelGrid, bitmap: ImageBitmap, info: ConvertInfo) => void;
+  setConverting: (converting: boolean) => void;
+  setConvertError: (message: string | null) => void;
+  clearResult: () => void;
 }
 
 export interface SettingsSlice {
@@ -83,8 +119,6 @@ export interface UiSlice {
   setCursor: (p: { x: number; y: number } | null) => void;
   showGrid: boolean;
   setShowGrid: (v: boolean) => void;
-  showSource: boolean;
-  setShowSource: (v: boolean) => void;
   panelCollapsed: boolean;
   togglePanel: () => void;
   busy: string | null;
@@ -92,9 +126,26 @@ export interface UiSlice {
   toasts: Toast[];
   pushToast: (kind: ToastKind, text: string) => void;
   dismissToast: (id: number) => void;
+
+  compareMode: CompareMode;
+  setCompareMode: (mode: CompareMode) => void;
+  /** 侧滑分割线的位置，0-1，相对画布宽度 */
+  splitPos: number;
+  setSplitPos: (v: number) => void;
+  /**
+   * 用户正在拖动某个控件。
+   * 转换时据此判断是否降级到快速模式（跳过 CIELAB），见 docs/DESIGN.md §8。
+   */
+  interacting: boolean;
+  setInteracting: (v: boolean) => void;
 }
 
-export type AppStore = SourceSlice & DocSlice & SettingsSlice & ToolSlice & UiSlice;
+export type AppStore = SourceSlice &
+  DocSlice &
+  ConvertSlice &
+  SettingsSlice &
+  ToolSlice &
+  UiSlice;
 
 /* ------------------------------------------------------------ 常量与工具 */
 
@@ -119,6 +170,8 @@ const createSourceSlice: StateCreator<AppStore, [], [], SourceSlice> = (set, get
     set({ sourceStatus: 'decoding', sourceError: null });
     try {
       const source = await loadSourceImage(file, fallbackName);
+      // 换图即作废旧结果，避免编辑层与新图尺寸不一致
+      get().clearResult();
       set({ source, sourceStatus: 'ready', sourceError: null, doc: null });
       if (source.truncated) {
         get().pushToast(
@@ -136,6 +189,7 @@ const createSourceSlice: StateCreator<AppStore, [], [], SourceSlice> = (set, get
   clearSource() {
     const current = get().source;
     if (current) current.previewBitmap.close();
+    get().clearResult();
     set({ source: null, sourceStatus: 'idle', sourceError: null, doc: null, cursor: null });
   },
 });
@@ -143,6 +197,33 @@ const createSourceSlice: StateCreator<AppStore, [], [], SourceSlice> = (set, get
 const createDocSlice: StateCreator<AppStore, [], [], DocSlice> = (set) => ({
   doc: null,
   setDoc: (doc) => set({ doc }),
+});
+
+const createConvertSlice: StateCreator<AppStore, [], [], ConvertSlice> = (set, get) => ({
+  palette: resolvePalette(DEFAULT_PALETTE_ID),
+  setPalette: (palette) => set({ palette }),
+
+  baseGrid: null,
+  resultBitmap: null,
+  info: null,
+  converting: false,
+  convertError: null,
+
+  applyResult: (grid, bitmap, info) => {
+    // 手动释放上一张位图，否则长时间调参会一直累积显存
+    const previous = get().resultBitmap;
+    if (previous && previous !== bitmap) previous.close();
+    set({ baseGrid: grid, resultBitmap: bitmap, info, converting: false, convertError: null });
+  },
+
+  setConverting: (converting) => set({ converting }),
+  setConvertError: (message) => set({ convertError: message, converting: false }),
+
+  clearResult: () => {
+    const previous = get().resultBitmap;
+    if (previous) previous.close();
+    set({ baseGrid: null, resultBitmap: null, info: null, convertError: null, converting: false });
+  },
 });
 
 const createSettingsSlice: StateCreator<AppStore, [], [], SettingsSlice> = (set) => ({
@@ -180,9 +261,6 @@ const createUiSlice: StateCreator<AppStore, [], [], UiSlice> = (set, get) => ({
   showGrid: true,
   setShowGrid: (showGrid) => set({ showGrid }),
 
-  showSource: true,
-  setShowSource: (showSource) => set({ showSource }),
-
   panelCollapsed: false,
   togglePanel: () => set((s) => ({ panelCollapsed: !s.panelCollapsed })),
 
@@ -197,6 +275,15 @@ const createUiSlice: StateCreator<AppStore, [], [], UiSlice> = (set, get) => ({
     setTimeout(() => get().dismissToast(toast.id), TOAST_TTL);
   },
   dismissToast: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
+
+  compareMode: 'split',
+  setCompareMode: (compareMode) => set({ compareMode }),
+
+  splitPos: 0.5,
+  setSplitPos: (v) => set({ splitPos: v < 0 ? 0 : v > 1 ? 1 : v }),
+
+  interacting: false,
+  setInteracting: (interacting) => set({ interacting }),
 });
 
 /* --------------------------------------------------------------- 组装 */
@@ -204,6 +291,7 @@ const createUiSlice: StateCreator<AppStore, [], [], UiSlice> = (set, get) => ({
 export const useApp = create<AppStore>()((...args) => ({
   ...createSourceSlice(...args),
   ...createDocSlice(...args),
+  ...createConvertSlice(...args),
   ...createSettingsSlice(...args),
   ...createToolSlice(...args),
   ...createUiSlice(...args),

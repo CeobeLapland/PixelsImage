@@ -7,6 +7,9 @@ export function StatusBar(): JSX.Element {
   const cursor = useApp((s) => s.cursor);
   const zoom = useApp((s) => s.view.zoom);
   const busy = useApp((s) => s.busy);
+  const grid = useApp((s) => s.baseGrid);
+  const info = useApp((s) => s.info);
+  const converting = useApp((s) => s.converting);
 
   const original = source ? `${source.originalWidth}×${source.originalHeight}` : '—';
   const working = source ? `${source.imageData.width}×${source.imageData.height}` : '—';
@@ -31,17 +34,34 @@ export function StatusBar(): JSX.Element {
         缩放 <b>{zoomText}×</b>
       </span>
 
+      <span className="status__sep" />
+      <span className="status__item">
+        网格 <b>{grid ? `${grid.w}×${grid.h}` : '—'}</b>
+      </span>
+      {info && (
+        <>
+          <span className="status__sep" />
+          <span className="status__item">
+            用色 <b>{info.usedColors}</b>
+          </span>
+          <span className="status__sep" />
+          <span className="status__item">
+            耗时 <b>{info.ms.toFixed(1)} ms</b>
+          </span>
+        </>
+      )}
+
       <span className="status__spacer" />
 
-      {busy && (
+      {(busy || converting) && (
         <>
           <span className="status__item status__item--accent">
-            <b>{busy}</b>
+            <b>{busy ?? '转换中…'}</b>
           </span>
           <span className="status__sep" />
         </>
       )}
-      <span className="status__item">M0 · 工程骨架</span>
+      <span className="status__item">M1 · 转换引擎</span>
     </footer>
   );
 }
