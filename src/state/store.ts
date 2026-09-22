@@ -3,8 +3,10 @@
  *
  * 分片对应 docs/DESIGN.md §9：
  *   source   —— 源图与解码状态
- *   doc      —— 工作文档（M1 起填充）
+ *   doc      —— 工作文档（M7 存档用）
+ *   convert  —— 转换结果与调色板
  *   settings —— 转换参数
+ *   edit     —— 手工编辑层、选区、撤销栈（M2）
  *   tool     —— 编辑器工具
  *   ui       —— 视图、光标、提示
  *
@@ -14,19 +16,31 @@
 
 import { create, type StateCreator } from 'zustand';
 
+import { applyCellEdits, cloneEditLayer, countEdits, resampleEditLayer, type CellEdit } from '@/core/edit';
 import { isProbablyImage, loadSourceImage } from '@/core/image';
 import { DEFAULT_PALETTE_ID, resolvePalette } from '@/palettes/builtin';
 import {
+  createEditLayer,
   makeDefaultSettings,
   type ConvertSettings,
   type PreprocessSettings,
   type Palette,
+  type PixelCell,
   type PixelDocument,
+  type EditLayer,
   type PixelGrid,
+  type Rect,
   type SourceImage,
   type SymmetryMode,
   type ToolId,
 } from '@/core/types';
+import {
+  createHistory,
+  pushHistory,
+  stepBack,
+  stepForward,
+  type HistoryState,
+} from './history';
 
 /* ------------------------------------------------------------------ 类型 */
 
@@ -48,6 +62,15 @@ export interface ViewTransform {
 
 /** 对比视图模式 */
 export type CompareMode = 'split' | 'sideBySide' | 'result' | 'source';
+
+/** 光标所在的格及其取值（状态栏读数） */
+export interface HoverInfo {
+  x: number;
+  y: number;
+  /** 该格当前生效的调色板索引 */
+  index: number;
+  alpha: number;
+}
 
 /** 一次转换的产出信息 */
 export interface ConvertInfo {
@@ -73,20 +96,21 @@ export interface DocSlice {
   setDoc: (doc: PixelDocument | null) => void;
 }
 
-/** 转换结果（M1）。编辑层在 M2 接入后会并入 PixelDocument。 */
 export interface ConvertSlice {
   /** 当前调色板对象（由 settings.paletteId 解析得到） */
   palette: Palette;
   setPalette: (palette: Palette) => void;
 
   baseGrid: PixelGrid | null;
-  /** 供 canvas 绘制的位图，与 baseGrid 同步更新 */
-  resultBitmap: ImageBitmap | null;
   info: ConvertInfo | null;
   converting: boolean;
   convertError: string | null;
 
-  applyResult: (grid: PixelGrid, bitmap: ImageBitmap, info: ConvertInfo) => void;
+  /**
+   * 落库一次转换结果。调色板随结果一起写入（docs/DESIGN.md 决策 13），
+   * 网格尺寸变化时按比例重采样手工编辑层，保证「调参不毁手改」。
+   */
+  applyResult: (grid: PixelGrid, palette: Palette, info: ConvertInfo) => void;
   setConverting: (converting: boolean) => void;
   setConvertError: (message: string | null) => void;
   clearResult: () => void;
@@ -99,16 +123,64 @@ export interface SettingsSlice {
   resetSettings: () => void;
 }
 
+/**
+ * 手工编辑 —— 双层编辑模型（docs/DESIGN.md §3.4）在状态层的落地。
+ *
+ * 编辑层**就地修改**（每次 pointermove 都可能写），因此内容变化不会改变
+ * 它的对象引用；`editVersion` 就是给渲染方看的版本号，谁依赖它就跟着重绘。
+ */
+export interface EditSlice {
+  /** 当前网格尺寸下的手工编辑层 */
+  editLayer: EditLayer | null;
+  /**
+   * 手工编辑的基准层：始终是「上一次真正动手编辑时的尺寸与内容」。
+   *
+   * 尺寸变更时从它重采样，而不是在已经重采样过的结果上再采一次 ——
+   * 拖动「目标格数」滑块会连续触发十几次转换，逐次重采样会把手工编辑
+   * 一路抹平。有了基准层，反复拖动尺寸只在最终落点产生一次重采样。
+   */
+  editOrigin: { w: number; h: number; layer: EditLayer } | null;
+  /** 手工覆盖过的格子数，面板与状态栏显示用 */
+  editedCount: number;
+  /** 编辑层内容版本号：自增即代表需要重绘 */
+  editVersion: number;
+
+  selection: Rect | null;
+  /** 原图半透明叠加（描线对照用），仅在「仅结果」视图生效 */
+  overlaySource: boolean;
+  overlayOpacity: number;
+
+  history: HistoryState;
+
+  clearEditLayer: () => void;
+  setSelection: (rect: Rect | null) => void;
+  setOverlaySource: (v: boolean) => void;
+  setOverlayOpacity: (v: number) => void;
+  /** 工具已就地改了 editLayer，这里只通知重绘（不进撤销栈） */
+  touchEditLayer: () => void;
+  /** 收笔：把一次操作的改动建成撤销记录 */
+  commitEdits: (label: string, edits: CellEdit[]) => void;
+  undo: () => void;
+  redo: () => void;
+}
+
 export interface ToolSlice {
   tool: ToolId;
   brushSize: number;
   symmetry: SymmetryMode;
   /** 前景色 = 调色板索引 */
   foreground: number;
+  /** 背景色 = 调色板索引，X 键与前景交换 */
+  background: number;
+  /** 矩形/椭圆是否填充 */
+  shapeFill: boolean;
   setTool: (tool: ToolId) => void;
   setBrushSize: (size: number) => void;
   setSymmetry: (mode: SymmetryMode) => void;
   setForeground: (index: number) => void;
+  setBackground: (index: number) => void;
+  swapColors: () => void;
+  setShapeFill: (v: boolean) => void;
 }
 
 export interface UiSlice {
@@ -117,6 +189,9 @@ export interface UiSlice {
   /** 光标所在的源图像素坐标；移出画布时为 null */
   cursor: { x: number; y: number } | null;
   setCursor: (p: { x: number; y: number } | null) => void;
+  /** 光标所在的格与取值（有网格结果时才有） */
+  hover: HoverInfo | null;
+  setHover: (h: HoverInfo | null) => void;
   showGrid: boolean;
   setShowGrid: (v: boolean) => void;
   panelCollapsed: boolean;
@@ -144,6 +219,7 @@ export type AppStore = SourceSlice &
   DocSlice &
   ConvertSlice &
   SettingsSlice &
+  EditSlice &
   ToolSlice &
   UiSlice;
 
@@ -153,6 +229,18 @@ const TOAST_TTL = 6000;
 let toastSeq = 0;
 
 const IDENTITY_VIEW: ViewTransform = { zoom: 1, panX: 0, panY: 0 };
+
+/** 编辑层尺寸未变时返回原对象：拖参数滑块时每帧都会走到这里，克隆不起 */
+function layerForSize(
+  current: EditLayer | null,
+  origin: { w: number; h: number; layer: EditLayer } | null,
+  w: number,
+  h: number,
+): EditLayer {
+  if (current && current.w === w && current.h === h) return current;
+  if (origin) return resampleEditLayer(origin.layer, w, h);
+  return createEditLayer(w, h);
+}
 
 /* ------------------------------------------------------------------ 分片 */
 
@@ -190,7 +278,7 @@ const createSourceSlice: StateCreator<AppStore, [], [], SourceSlice> = (set, get
     const current = get().source;
     if (current) current.previewBitmap.close();
     get().clearResult();
-    set({ source: null, sourceStatus: 'idle', sourceError: null, doc: null, cursor: null });
+    set({ source: null, sourceStatus: 'idle', sourceError: null, doc: null, cursor: null, hover: null });
   },
 });
 
@@ -201,29 +289,69 @@ const createDocSlice: StateCreator<AppStore, [], [], DocSlice> = (set) => ({
 
 const createConvertSlice: StateCreator<AppStore, [], [], ConvertSlice> = (set, get) => ({
   palette: resolvePalette(DEFAULT_PALETTE_ID),
-  setPalette: (palette) => set({ palette }),
+  setPalette: (palette) =>
+    set((s) => {
+      // 换到更小的调色板时，前景/背景索引可能越界。
+      // 越界的索引不会报错，只会静默渲染成最后一个色 —— 那比崩溃更难发现。
+      const last = Math.max(0, palette.colors.length - 1);
+      return {
+        palette,
+        foreground: Math.min(s.foreground, last),
+        background: Math.min(s.background, last),
+      };
+    }),
 
   baseGrid: null,
-  resultBitmap: null,
   info: null,
   converting: false,
   convertError: null,
 
-  applyResult: (grid, bitmap, info) => {
-    // 手动释放上一张位图，否则长时间调参会一直累积显存
-    const previous = get().resultBitmap;
-    if (previous && previous !== bitmap) previous.close();
-    set({ baseGrid: grid, resultBitmap: bitmap, info, converting: false, convertError: null });
+  applyResult: (grid, palette, info) => {
+    const previous = get().editLayer;
+    const sizeChanged = !previous || previous.w !== grid.w || previous.h !== grid.h;
+    const edits = previous ? countEdits(previous) : 0;
+    const nextLayer = sizeChanged
+      ? layerForSize(previous, get().editOrigin, grid.w, grid.h)
+      : previous;
+
+    set({
+      baseGrid: grid,
+      palette,
+      info,
+      converting: false,
+      convertError: null,
+      editLayer: nextLayer,
+      editedCount: sizeChanged ? countEdits(nextLayer) : get().editedCount,
+      // 尺寸变了选区就没意义了
+      selection: sizeChanged ? null : get().selection,
+      editVersion: get().editVersion + 1,
+    });
+
+    if (sizeChanged && edits > 0) {
+      get().pushToast(
+        'info',
+        `网格尺寸变为 ${grid.w}×${grid.h}，${edits} 个手工修改已按比例重采样`,
+      );
+    }
   },
 
   setConverting: (converting) => set({ converting }),
   setConvertError: (message) => set({ convertError: message, converting: false }),
 
-  clearResult: () => {
-    const previous = get().resultBitmap;
-    if (previous) previous.close();
-    set({ baseGrid: null, resultBitmap: null, info: null, convertError: null, converting: false });
-  },
+  clearResult: () =>
+    set({
+      baseGrid: null,
+      info: null,
+      convertError: null,
+      converting: false,
+      editLayer: null,
+      editOrigin: null,
+      editedCount: 0,
+      editVersion: 0,
+      selection: null,
+      history: createHistory(),
+      hover: null,
+    }),
 });
 
 const createSettingsSlice: StateCreator<AppStore, [], [], SettingsSlice> = (set) => ({
@@ -239,16 +367,101 @@ const createSettingsSlice: StateCreator<AppStore, [], [], SettingsSlice> = (set)
   resetSettings: () => set({ settings: makeDefaultSettings() }),
 });
 
+const createEditSlice: StateCreator<AppStore, [], [], EditSlice> = (set, get) => ({
+  editLayer: null,
+  editOrigin: null,
+  editedCount: 0,
+  editVersion: 0,
+  selection: null,
+  overlaySource: false,
+  overlayOpacity: 0.45,
+  history: createHistory(),
+
+  clearEditLayer: () => {
+    const layer = get().editLayer;
+    if (!layer) return;
+    const edits: CellEdit[] = [];
+    for (let i = 0; i < layer.cells.length; i += 1) {
+      const cell: PixelCell | null = layer.cells[i] ?? null;
+      if (!cell) continue;
+      edits.push({ index: i, before: cell, after: null });
+    }
+    if (edits.length === 0) {
+      get().pushToast('info', '当前没有手工修改的格子');
+      return;
+    }
+    // 'after' 侧是 null → 清空；撤销时写回 'before' 侧即可恢复
+    applyCellEdits(layer, edits, 'after');
+    get().commitEdits('清空编辑层', edits);
+    get().pushToast('info', `已清空 ${edits.length} 个手工修改的格子（可撤销）`);
+  },
+
+  setSelection: (selection) => set({ selection }),
+  setOverlaySource: (overlaySource) => set({ overlaySource }),
+  setOverlayOpacity: (v) => set({ overlayOpacity: v < 0 ? 0 : v > 1 ? 1 : v }),
+
+  touchEditLayer: () => set((s) => ({ editVersion: s.editVersion + 1 })),
+
+  commitEdits: (label, edits) => {
+    if (edits.length === 0) return;
+    const layer = get().editLayer;
+    const base = get().baseGrid;
+    set((s) => ({
+      history: pushHistory(s.history, { label, edits }),
+      editedCount: countEdits(layer),
+      editVersion: s.editVersion + 1,
+      // 动手之后的尺寸就是新的基准尺寸
+      editOrigin: layer && base ? { w: layer.w, h: layer.h, layer: cloneEditLayer(layer) } : s.editOrigin,
+    }));
+  },
+
+  undo: () => {
+    const state = get();
+    const step = stepBack(state.history);
+    if (!step || !state.editLayer) {
+      state.pushToast('info', '没有可撤销的操作');
+      return;
+    }
+    applyCellEdits(state.editLayer, step.edits, 'before');
+    set((s) => ({
+      history: step.state,
+      editedCount: countEdits(s.editLayer),
+      editVersion: s.editVersion + 1,
+    }));
+  },
+
+  redo: () => {
+    const state = get();
+    const step = stepForward(state.history);
+    if (!step || !state.editLayer) {
+      state.pushToast('info', '没有可重做的操作');
+      return;
+    }
+    applyCellEdits(state.editLayer, step.edits, 'after');
+    set((s) => ({
+      history: step.state,
+      editedCount: countEdits(s.editLayer),
+      editVersion: s.editVersion + 1,
+    }));
+  },
+});
+
 const createToolSlice: StateCreator<AppStore, [], [], ToolSlice> = (set) => ({
   tool: 'pencil',
   brushSize: 1,
   symmetry: 'none',
   foreground: 0,
+  background: 1,
+  shapeFill: false,
 
   setTool: (tool) => set({ tool }),
   setBrushSize: (brushSize) => set({ brushSize: Math.max(1, Math.min(4, Math.round(brushSize))) }),
   setSymmetry: (symmetry) => set({ symmetry }),
-  setForeground: (foreground) => set({ foreground: Math.max(0, Math.round(foreground)) }),
+  setForeground: (foreground) =>
+    set({ foreground: foreground < 0 ? 0 : Math.round(foreground) }),
+  setBackground: (background) => set({ background: background < 0 ? 0 : Math.round(background) }),
+  swapColors: () => set((s) => ({ foreground: s.background, background: s.foreground })),
+  setShapeFill: (shapeFill) => set({ shapeFill }),
 });
 
 const createUiSlice: StateCreator<AppStore, [], [], UiSlice> = (set, get) => ({
@@ -257,6 +470,9 @@ const createUiSlice: StateCreator<AppStore, [], [], UiSlice> = (set, get) => ({
 
   cursor: null,
   setCursor: (cursor) => set({ cursor }),
+
+  hover: null,
+  setHover: (hover) => set({ hover }),
 
   showGrid: true,
   setShowGrid: (showGrid) => set({ showGrid }),
@@ -293,6 +509,7 @@ export const useApp = create<AppStore>()((...args) => ({
   ...createDocSlice(...args),
   ...createConvertSlice(...args),
   ...createSettingsSlice(...args),
+  ...createEditSlice(...args),
   ...createToolSlice(...args),
   ...createUiSlice(...args),
 }));

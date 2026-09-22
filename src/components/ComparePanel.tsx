@@ -15,7 +15,7 @@ const MODE_OPTIONS: readonly { value: CompareMode; label: string; title: string 
     label: '并排',
     title: '原图与结果各占一半，整体观感对照用这个。此模式下不响应缩放平移',
   },
-  { value: 'result', label: '仅结果', title: '只看像素图。M2 起这是实际绘图时的工作视图' },
+  { value: 'result', label: '仅结果', title: '只看像素图。绘图主要在这个视图下进行' },
   { value: 'source', label: '仅原图', title: '只看原图，方便回头确认细节' },
 ];
 
@@ -58,9 +58,9 @@ export function ComparePanel(): JSX.Element {
       )}
 
       <Toggle
-        label="源像素网格"
+        label="网格线"
         value={showGrid}
-        title="需要放大到 8× 以上才会绘制，否则会与像素本身产生摩尔纹"
+        title="有转换结果时画格网，没有结果时画源像素网格。格边长小于 4px 会自动隐藏，避免糊成一片"
         onChange={setShowGrid}
       />
 

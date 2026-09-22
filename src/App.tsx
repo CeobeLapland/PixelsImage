@@ -1,6 +1,6 @@
-import { useEffect, type JSX } from 'react';
+import { type JSX } from 'react';
 
-import { useApp } from '@/state/store';
+import { useShortcuts } from '@/state/useShortcuts';
 import { usePipelineRunner } from '@/state/usePipeline';
 import { AppHeader } from './components/AppHeader';
 import { SidePanel } from './components/SidePanel';
@@ -12,25 +12,8 @@ import { ToolRail } from './components/ToolRail';
 export default function App(): JSX.Element {
   // 转换流水线的驱动：源图 / 参数变化 → Worker → 结果写入 store
   usePipelineRunner();
-
-  /* 面板折叠：Tab 换取更大的画布 */
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null;
-      if (
-        target &&
-        (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
-      ) {
-        return;
-      }
-      if (event.key === 'Tab') {
-        event.preventDefault();
-        useApp.getState().togglePanel();
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  // 全局快捷键：工具切换、笔刷、撤销重做、折叠面板（DESIGN §5.4）
+  useShortcuts();
 
   return (
     <div className="app">

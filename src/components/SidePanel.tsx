@@ -5,6 +5,7 @@ import { useApp } from '@/state/store';
 import { ComparePanel } from './ComparePanel';
 import { ConvertPanel } from './ConvertPanel';
 import { ExportPanel } from './ExportPanel';
+import { LayerPanel } from './LayerPanel';
 import { PalettePanel } from './PalettePanel';
 import { Row, Section } from './Section';
 
@@ -40,8 +41,8 @@ type MileState = 'done' | 'doing' | 'todo';
 
 const MILESTONES: { id: string; label: string; state: MileState }[] = [
   { id: 'M0', label: '工程骨架与导入', state: 'done' },
-  { id: 'M1', label: '转换引擎', state: 'doing' },
-  { id: 'M2', label: '像素编辑器', state: 'todo' },
+  { id: 'M1', label: '转换引擎', state: 'done' },
+  { id: 'M2', label: '像素编辑器', state: 'doing' },
   { id: 'M3', label: '调色板引擎', state: 'todo' },
   { id: 'M4', label: '智能辅助', state: 'todo' },
   { id: 'M5', label: '批量处理', state: 'todo' },
@@ -58,6 +59,7 @@ export function SidePanel(): JSX.Element {
   const converting = useApp((s) => s.converting);
   const convertError = useApp((s) => s.convertError);
   const hasResult = useApp((s) => s.baseGrid !== null);
+  const editedCount = useApp((s) => s.editedCount);
 
   const sourceBytes = source
     ? source.imageData.width * source.imageData.height * 4 +
@@ -98,6 +100,13 @@ export function SidePanel(): JSX.Element {
           <ConvertPanel />
         </Section>
 
+        <Section
+          title="编辑"
+          badge={editedCount > 0 ? <span className="badge">{editedCount} 格手改</span> : undefined}
+        >
+          <LayerPanel />
+        </Section>
+
         <Section title="调色板" defaultOpen={false}>
           <PalettePanel />
         </Section>
@@ -131,8 +140,8 @@ export function SidePanel(): JSX.Element {
             ))}
           </ul>
           <p className="note">
-            当前处于 <b>M1</b>：转换引擎已可用，参数改动实时重算（在 Web Worker 中执行）。
-            绘图工具在工具栏中占位但未启用，将在 M2 接入。
+            当前处于 <b>M2</b>：转换结果可以用工具栏里的八个工具手工微调，
+            手改存在独立的编辑层，调转换参数不会覆盖它。
           </p>
         </Section>
       </div>

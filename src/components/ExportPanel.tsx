@@ -1,7 +1,8 @@
-import { useState, type JSX } from 'react';
+import { useMemo, useState, type JSX } from 'react';
 
 import { Row } from './Section';
 import { NumberField, Toggle } from './controls';
+import { composite } from '@/core/composite';
 import { buildExportName, downloadBlob, exportGridPng } from '@/core/exporters/png';
 import { useApp } from '@/state/store';
 
@@ -9,7 +10,9 @@ import { useApp } from '@/state/store';
 const SCALE_PRESETS = [1, 2, 4, 8, 16, 32];
 
 export function ExportPanel(): JSX.Element {
-  const grid = useApp((s) => s.baseGrid);
+  const baseGrid = useApp((s) => s.baseGrid);
+  const editLayer = useApp((s) => s.editLayer);
+  const editVersion = useApp((s) => s.editVersion);
   const palette = useApp((s) => s.palette);
   const source = useApp((s) => s.source);
   const info = useApp((s) => s.info);
@@ -20,6 +23,13 @@ export function ExportPanel(): JSX.Element {
   const [busy, setBusy] = useState(false);
 
   const background = opaque ? '#ffffff' : 'transparent';
+
+  // 导出的是**合成后**的网格：手工修改必须进 PNG，否则改了半天导出的还是原样。
+  // 编辑层是就地修改的（引用不变），所以版本号必须进依赖表。
+  const grid = useMemo(
+    () => (baseGrid ? composite(baseGrid, editLayer) : null),
+    [baseGrid, editLayer, editVersion],
+  );
 
   const doExport = async () => {
     if (!grid || !source) return;

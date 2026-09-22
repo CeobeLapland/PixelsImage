@@ -224,6 +224,41 @@
   color: var(--accent);
 }
 
+.chip:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* 面板里的成对操作按钮（撤销 / 重做）：等宽平分 */
+.chips--actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin: 12px 0 10px;
+}
+
+.chips--actions .chip {
+  padding: 6px 8px;
+  border-radius: var(--r-sm);
+  font-size: 11.5px;
+}
+
+/* 说明文字里的行内跳转 */
+.linkbtn {
+  margin-left: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  text-decoration: underline dotted;
+  cursor: pointer;
+}
+
+.linkbtn:hover {
+  color: #ffd489;
+}
+
 /* ------------------------------------------------------------------ 色板 */
 
 .swatches {
@@ -248,17 +283,60 @@
   box-shadow: 0 0 0 1px var(--accent), 0 2px 6px rgba(0, 0, 0, 0.5);
 }
 
-.swatch__copied {
+/* 当前前景色：琥珀色内环。只有这一个色块带环，保证一眼能找到 */
+.swatch[aria-pressed='true'] {
+  box-shadow: 0 0 0 2px var(--accent), inset 0 0 0 1px rgba(0, 0, 0, 0.5);
+  z-index: 1;
+}
+
+/* 当前背景色：右下角一个「后」字角标 */
+.swatch__mark {
   position: absolute;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  background: rgba(8, 9, 11, 0.82);
-  color: var(--accent);
+  right: 0;
+  bottom: 0;
+  padding: 0 2px;
+  border-radius: 2px 0 2px 0;
+  background: rgba(8, 9, 11, 0.75);
+  color: var(--ink-dim);
   font-family: var(--font-mono);
   font-size: 8px;
-  letter-spacing: 0.04em;
+  line-height: 1.3;
+}
+
+/* ------------------------------------------------------------ 当前色槽 */
+
+.colorslot {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  align-items: center;
+  gap: 6px;
+  margin: 10px 0 4px;
+}
+
+.colorslot__item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.colorslot__chip {
+  flex: none;
+  width: 22px;
+  height: 22px;
   border-radius: 2px;
+  border: 1px solid rgba(0, 0, 0, 0.5);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  /* 颜色由内联的 background-color 指定（调色板色都是不透明的） */
+}
+
+.colorslot__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--ink-faint);
 }
 
 /* ------------------------------------------------------------ 整宽按钮 */

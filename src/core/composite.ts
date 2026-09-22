@@ -4,8 +4,9 @@
  * composite 是双层编辑模型的核心运算（docs/DESIGN.md §3.4）：
  *   composite(i) = editLayer.cells[i] ?? baseGrid(i)
  *
- * M2 起编辑层才会被写入；M1 阶段它恒为 null，但这层必须现在就存在，
- * 否则 M2 接进来时要改动所有渲染路径。
+ * 合成结果只用在**渲染与导出**上；编辑层本身保持稀疏，只记被手改过的格子。
+ * 注意 composite() 在没有编辑层时会直接返回底层对象（省一次拷贝），
+ * 拿到返回值的一方按只读对待。
  */
 
 import type { EditLayer, Palette, PixelGrid } from './types';
@@ -17,31 +18,38 @@ import { createGrid } from './types';
  * 编辑层中越界的部分被忽略。
  */
 export function composite(base: PixelGrid, edit: EditLayer | null): PixelGrid {
+  // 没有手工编辑时直接返回底层本身（只读约定，渲染方不得改动返回的网格）
   if (!edit) return base;
 
-  const sameSize = edit.w === base.w && edit.h === base.h;
   const out = createGrid(base.w, base.h);
-  out.indices.set(base.indices);
-  out.alpha.set(base.alpha);
-
-  if (sameSize) {
-    const cells = edit.cells;
-    for (let i = 0; i < cells.length; i += 1) {
-      const cell = cells[i];
-      if (!cell) continue;
-      out.indices[i] = cell.index;
-      out.alpha[i] = cell.alpha;
-    }
-    return out;
-  }
-
+  compositeInto(base, edit, out);
   return out;
 }
 
-/** 网格 → ImageData（供 canvas 绘制与 PNG 导出） */
-export function gridToImageData(grid: PixelGrid, palette: Palette): ImageData {
+/**
+ * 同上，但写入调用方提供的网格对象，不分配新缓冲。
+ *
+ * M2 起每画一笔都要重算合成结果，512×512 的网格每次分配 0.5MB 会让 GC 抖；
+ * 画布端因此持有一份 scratch 网格反复复用。
+ */
+export function compositeInto(base: PixelGrid, edit: EditLayer | null, out: PixelGrid): void {
+  out.indices.set(base.indices);
+  out.alpha.set(base.alpha);
+  if (!edit) return;
+  if (edit.w !== base.w || edit.h !== base.h) return;
+
+  const cells = edit.cells;
+  for (let i = 0; i < cells.length; i += 1) {
+    const cell = cells[i];
+    if (!cell) continue;
+    out.indices[i] = cell.index;
+    out.alpha[i] = cell.alpha;
+  }
+}
+
+/** 网格 → RGBA 缓冲（长度 w*h*4），写入调用方提供的缓冲 */
+export function gridToRgba(grid: PixelGrid, palette: Palette, out: Uint8ClampedArray): void {
   const { w, h, indices, alpha } = grid;
-  const data = new Uint8ClampedArray(w * h * 4);
   const colors = palette.colors;
   const last = colors.length - 1;
 
@@ -49,18 +57,27 @@ export function gridToImageData(grid: PixelGrid, palette: Palette): ImageData {
     const a = alpha[i];
     if (a === 0) {
       // 保持全透明；RGB 归零避免半透明边缘出现残留色
+      out[o] = 0;
+      out[o + 1] = 0;
+      out[o + 2] = 0;
+      out[o + 3] = 0;
       continue;
     }
     // 索引越界时钳到最后一个色，避免整块变黑
     const idx = indices[i] > last ? last : indices[i];
     const c = colors[idx];
-    data[o] = c[0];
-    data[o + 1] = c[1];
-    data[o + 2] = c[2];
-    data[o + 3] = a;
+    out[o] = c[0];
+    out[o + 1] = c[1];
+    out[o + 2] = c[2];
+    out[o + 3] = a;
   }
+}
 
-  return new ImageData(data, w, h);
+/** 网格 → ImageData（供 canvas 绘制与 PNG 导出） */
+export function gridToImageData(grid: PixelGrid, palette: Palette): ImageData {
+  const data = new Uint8ClampedArray(grid.w * grid.h * 4);
+  gridToRgba(grid, palette, data);
+  return new ImageData(data, grid.w, grid.h);
 }
 
 /**

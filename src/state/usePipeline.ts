@@ -7,7 +7,6 @@
 
 import { useEffect } from 'react';
 
-import { gridToImageData } from '@/core/composite';
 import { getPipelineRunner } from '@/core/workers/client';
 import { resolvePalette } from '@/palettes/builtin';
 import { useApp } from './store';
@@ -24,16 +23,13 @@ export function usePipelineRunner(): void {
     const runner = getPipelineRunner();
     const unsubscribe = runner.subscribe(
       (outcome) => {
-        const imageData = gridToImageData(outcome.grid, outcome.palette);
-        void createImageBitmap(imageData).then((bitmap) => {
-          useApp.getState().applyResult(outcome.grid, bitmap, {
-            targetW: outcome.targetW,
-            targetH: outcome.targetH,
-            usedColors: outcome.usedColors,
-            trimmed: outcome.trimmed,
-            ms: outcome.ms,
-            fallback: outcome.fallback,
-          });
+        useApp.getState().applyResult(outcome.grid, outcome.palette, {
+          targetW: outcome.targetW,
+          targetH: outcome.targetH,
+          usedColors: outcome.usedColors,
+          trimmed: outcome.trimmed,
+          ms: outcome.ms,
+          fallback: outcome.fallback,
         });
       },
       (message) => {

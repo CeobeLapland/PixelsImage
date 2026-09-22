@@ -354,6 +354,12 @@ button:disabled {
   flex: 1;
 }
 
+/* 撤销 / 重做的字形比像素图标更直观，这里用字 */
+.rail__glyph {
+  font-size: 15px;
+  line-height: 1;
+}
+
 /* ------------------------------------------------------------------ 画布区 */
 
 .stage {
@@ -402,6 +408,33 @@ button:disabled {
   display: block;
   width: 100%;
   height: 100%;
+}
+
+/* 覆盖层：网格线 / 选区 / 笔刷光标 / 形状预览。
+   独立成一张画布，鼠标每动一下只重绘这一层，不重绘整张像素图。 */
+.viewport__overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 2;
+}
+
+/* 对照视图（并排 / 仅原图）不能落笔时的提示 */
+.viewport__notice {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  transform: translateX(-50%);
+  padding: 5px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: rgba(15, 18, 22, 0.9);
+  color: var(--ink-faint);
+  font-size: 11px;
+  pointer-events: none;
+  z-index: 6;
 }
 
 .viewport--panning {

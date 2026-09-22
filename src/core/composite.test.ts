@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import { BLACK, BLUE, RED, WHITE, makePalette } from '@/core/__testing__/fixtures';
-import { composite, gridToImageData, upscaleNearest } from './composite';
-import { createGrid, type PixelGrid } from './types';
+import { composite, compositeInto, gridToImageData, gridToRgba, upscaleNearest } from './composite';
+import { createEditLayer, createGrid, type PixelGrid } from './types';
 
 const PALETTE = makePalette('p', [RED, WHITE, BLUE, BLACK]);
 
@@ -157,5 +157,82 @@ describe('composite 与渲染的配合', () => {
 
     const merged = composite(base, { w: 1, h: 1, cells: [{ index: 0, alpha: 0 }] });
     expect(pixelOf(gridToImageData(merged, PALETTE), 0, 0)).toEqual([0, 0, 0, 0]);
+  });
+
+  it('没有编辑层时返回底层本身，不复制一份', () => {
+    const base = createGrid(2, 2);
+    expect(composite(base, null)).toBe(base);
+  });
+});
+
+describe('compositeInto（复用缓冲的合成）', () => {
+  it('结果与 composite 完全一致', () => {
+    const base = createGrid(3, 2);
+    for (let i = 0; i < base.indices.length; i += 1) {
+      base.indices[i] = i % 4;
+      base.alpha[i] = 200;
+    }
+    const edit = createEditLayer(3, 2);
+    edit.cells[0] = { index: 2, alpha: 255 };
+    edit.cells[4] = { index: 0, alpha: 0 };
+
+    const out = createGrid(3, 2);
+    compositeInto(base, edit, out);
+    const reference = composite(base, edit);
+
+    expect(Array.from(out.indices)).toEqual(Array.from(reference.indices));
+    expect(Array.from(out.alpha)).toEqual(Array.from(reference.alpha));
+  });
+
+  it('反复复用同一个 out 不会残留上一次的结果', () => {
+    const base = createGrid(2, 1);
+    base.indices[0] = 0;
+    base.alpha.fill(255);
+    const edit = createEditLayer(2, 1);
+    edit.cells[0] = { index: 3, alpha: 255 };
+
+    const out = createGrid(2, 1);
+    compositeInto(base, edit, out);
+    expect(out.indices[0]).toBe(3);
+
+    // 换成没有编辑层的合成：上一轮写进去的 3 必须被覆盖回底层的 0
+    compositeInto(base, null, out);
+    expect(out.indices[0]).toBe(0);
+    expect(out.alpha[1]).toBe(255);
+  });
+
+  it('编辑层尺寸不一致时忽略它，而不是越界读取', () => {
+    const base = createGrid(4, 4);
+    base.indices.fill(1);
+    const stale = createEditLayer(2, 2);
+    stale.cells[0] = { index: 3, alpha: 255 };
+
+    const out = createGrid(4, 4);
+    compositeInto(base, stale, out);
+    expect(out.indices[0]).toBe(1);
+  });
+});
+
+describe('gridToRgba', () => {
+  it('写入调用方提供的缓冲，长度不足时不越界', () => {
+    const grid = createGrid(2, 1);
+    grid.indices.set([0, 2]);
+    grid.alpha.fill(255);
+
+    const out = new Uint8ClampedArray(2 * 1 * 4);
+    gridToRgba(grid, PALETTE, out);
+    expect(Array.from(out)).toEqual([255, 0, 0, 255, 0, 0, 255, 255]);
+  });
+
+  it('与 gridToImageData 的像素完全一致', () => {
+    const grid = createGrid(4, 3);
+    for (let i = 0; i < grid.indices.length; i += 1) {
+      grid.indices[i] = i % 5; // 含越界索引
+      grid.alpha[i] = i % 3 === 0 ? 0 : 180;
+    }
+    const data = gridToImageData(grid, PALETTE);
+    const out = new Uint8ClampedArray(data.data.length);
+    gridToRgba(grid, PALETTE, out);
+    expect(Array.from(out)).toEqual(Array.from(data.data));
   });
 });

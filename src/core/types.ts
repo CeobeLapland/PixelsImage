@@ -170,6 +170,31 @@ export interface GridPoint {
   y: number;
 }
 
+/** 矩形区域，格坐标；w/h 至少为 1，且 x/y 是左上角（已规范化） */
+export interface Rect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** 由拖拽的两点得到规范化的矩形（左上角 + 正尺寸） */
+export function normalizeRect(a: GridPoint, b: GridPoint): Rect {
+  return {
+    x: Math.min(a.x, b.x),
+    y: Math.min(a.y, b.y),
+    w: Math.abs(a.x - b.x) + 1,
+    h: Math.abs(a.y - b.y) + 1,
+  };
+}
+
+export function rectContains(rect: Rect, x: number, y: number): boolean {
+  return x >= rect.x && y >= rect.y && x < rect.x + rect.w && y < rect.y + rect.h;
+}
+
+/** 橡皮 / 删除写入的值：索引归 0、alpha 归 0，渲染时即为全透明 */
+export const TRANSPARENT_CELL: PixelCell = { index: 0, alpha: 0 };
+
 export const DEFAULT_PREPROCESS: PreprocessSettings = {
   brightness: 0,
   contrast: 0,
