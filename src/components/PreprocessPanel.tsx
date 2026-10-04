@@ -2,15 +2,35 @@ import type { JSX } from 'react';
 
 import { isPreprocessIdentity } from '@/core/preprocess';
 import { useApp } from '@/state/store';
-import { Slider, Toggle } from './controls';
+import { Segmented, Slider, Toggle } from './controls';
 import { Row } from './Section';
+
+/** 去背景的模式。默认「只去与边缘连通」是刻意的，见下面注释 */
+const BG_MODE_OPTIONS = [
+  {
+    value: 'none',
+    label: '关闭',
+    title: '不做按颜色去背景',
+  },
+  {
+    value: 'edges',
+    label: '只去边缘',
+    title: '只擦掉与画面边缘连通的部分。主体内部的白色（高光、白衣服）不会被误杀 —— 默认用它',
+  },
+  {
+    value: 'all',
+    label: '全部近白',
+    title: '所有接近白色的像素都擦掉，包括主体内部的。主体里确实没有白时才用',
+  },
+] as const;
 
 /**
  * 预处理面板：在降采样**之前**作用于源图。
  *
- * 这一组参数长期「有实现、没界面」，直到 M4 才补上 —— 而它恰好是去背的唯一途径：
- * α 阈值负责判「哪些像素算背景」，色晕清理负责把边缘那圈残留的背景色擦干净。
- * 两者一起用才是完整的一键去背（只用阈值会留下灰边）。
+ * 这一组参数长期「有实现、没界面」，直到 M4 才补上。M7 之后这里有两套去背手段，
+ * 用途完全不同，面板上必须讲清楚：
+ * - **按颜色去背景**：给白底/绿幕这类「背景是实色」的图用（照片、AI 生成图多半是这种）
+ * - **透明阈值**：给**已经有透明通道**的图用（抠好的 PNG），它看的是 alpha，对实色底无效
  */
 export function PreprocessPanel(): JSX.Element {
   const preprocess = useApp((s) => s.settings.preprocess);
@@ -19,9 +39,50 @@ export function PreprocessPanel(): JSX.Element {
   const pushToast = useApp((s) => s.pushToast);
 
   const active = !isPreprocessIdentity(preprocess);
+  const removing = preprocess.removeBackground !== 'none';
 
   return (
     <div className="section__body">
+      {/* ---------------- 按颜色去背景（M7 新增） ---------------- */}
+      <Segmented
+        label="去除背景色（白底）"
+        value={preprocess.removeBackground}
+        options={BG_MODE_OPTIONS}
+        columns={3}
+        onChange={(v) => patchPreprocess({ removeBackground: v })}
+      />
+      {removing && (
+        <>
+          <Slider
+            label="容差"
+            value={preprocess.bgTolerance}
+            min={0}
+            max={96}
+            format={(v) => `${v}（每通道差 ≤ ${v} 算背景）`}
+            onChange={(v) => patchPreprocess({ bgTolerance: v })}
+          />
+          <Toggle
+            label="边缘软化"
+            value={preprocess.bgSoftEdge}
+            title="紧贴背景的一圈过渡色按「离白色多远」给半透明。关掉的话边缘会留下一圈硬白边，降到像素尺寸后更明显"
+            onChange={(v) => patchPreprocess({ bgSoftEdge: v })}
+          />
+          <p className="note note--tight">
+            <b>只去边缘</b>是从画面四条边开始泛洪：只有和边缘连通的近白区域才会被擦掉。
+            所以主体内部的白色（眼睛高光、白字、白衣服）是安全的；
+            但主体与边缘之间若有一段白色通路连着，那部分也会被去掉。
+            容差调得越大越激进，<b>别超过主体最亮的浅色</b>。
+          </p>
+          {preprocess.bgSoftEdge && !preprocess.decontaminate && (
+            <p className="note note--warn note--tight">
+              软化的边缘像素只拿到了透明度，颜色里还混着背景色。
+              把下面的<b>边缘色晕清理</b>一起打开，它们才会被染成主体色。
+            </p>
+          )}
+        </>
+      )}
+
+      {/* ---------------- 颜色调整 ---------------- */}
       <Slider
         label="亮度"
         value={preprocess.brightness}
@@ -51,8 +112,9 @@ export function PreprocessPanel(): JSX.Element {
         onChange={(v) => patchPreprocess({ sharpen: v })}
       />
 
+      {/* ---------------- 透明通道去背（老路子） ---------------- */}
       <Slider
-        label="透明阈值（去背）"
+        label="透明阈值（按 alpha 去背）"
         value={preprocess.alphaThreshold}
         min={0}
         max={255}
@@ -67,11 +129,15 @@ export function PreprocessPanel(): JSX.Element {
       />
 
       {preprocess.alphaThreshold < 255 && !preprocess.decontaminate && (
-        <p className="note note--warn">
+        <p className="note note--warn note--tight">
           只设了透明阈值、没开色晕清理时，边缘常会留下一圈背景色的脏边
           （半透明像素的 RGB 里还混着背景色）。建议把上面的开关一起打开。
         </p>
       )}
+      <p className="note note--tight">
+        <b>透明阈值</b>看的是 alpha，只对<b>本来就有透明通道</b>的图有效（抠好的 PNG）。
+        白底照片每格 alpha 都是 255，调它是没反应的 —— 那种情况用上面的<b>去除背景色</b>。
+      </p>
 
       <Row k="处理生效" v={active ? '是' : '全部中性值'} muted />
 
@@ -89,9 +155,9 @@ export function PreprocessPanel(): JSX.Element {
       </button>
 
       <p className="note">
-        预处理在<b>降采样之前</b>执行：锐化必须先做，否则边缘已经糊掉了；
-        去背要放在最后，否则调色时会把背景色也算进去。
-        所有调整都会立刻重算，不需要重新导入图片。
+        预处理在<b>降采样之前</b>执行，顺序是：去背景色 → 调色 → 锐化 → alpha 阈值 → 色晕清理。
+        去背景排在最前，是因为它按<b>原图颜色</b>判定，与你眼里的白底一致
+        （先调亮度的话，白底变灰就判不出来了）。
       </p>
     </div>
   );

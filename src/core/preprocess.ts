@@ -2,10 +2,11 @@
  * 预处理：在降采样**之前**作用于源图。
  *
  * 顺序是刻意的：
- *   ① 亮度/对比度/饱和度 —— 逐像素的颜色调整
- *   ② 锐化               —— 需要邻域，必须在下采样前做，否则边缘已经糊掉了
- *   ③ alpha 阈值         —— 去背景要放在最后，否则调色时会把背景色也一起算进去
- *   ④ 边缘色晕清理       —— 必须在阈值之后：它要靠「谁还是半透明」来判断边缘
+ *   ① 去背景色      —— 用**原图颜色**判定，与你眼里的原图一致（先调亮度就会判错）
+ *   ② 亮度/对比度/饱和度 —— 逐像素的颜色调整
+ *   ③ 锐化               —— 需要邻域，必须在下采样前做，否则边缘已经糊掉了
+ *   ④ alpha 阈值         —— 去背景要放在最后，否则调色时会把背景色也一起算进去
+ *   ⑤ 边缘色晕清理       —— 必须在阈值之后：它要靠「谁还是半透明」来判断边缘
  *
  * 全部返回新缓冲，不改动调用方的源数据（源图要能反复重算）。
  */
@@ -22,7 +23,8 @@ export function isPreprocessIdentity(p: PreprocessSettings): boolean {
     p.saturation === 0 &&
     p.sharpen === 0 &&
     p.alphaThreshold >= 255 &&
-    !p.decontaminate
+    !p.decontaminate &&
+    p.removeBackground === 'none'
   );
 }
 
@@ -135,6 +137,160 @@ function applyAlphaThreshold(data: Uint8ClampedArray, threshold: number): void {
   }
 }
 
+/* ------------------------------------------------------------ 去背景色 */
+
+/** 去底色时判定「多像底色才算背景」：取各通道差值的最大者，比欧氏距离更直观可控 */
+function distanceTo(base: readonly [number, number, number], r: number, g: number, b: number): number {
+  const dr = r - base[0];
+  const dg = g - base[1];
+  const db = b - base[2];
+  return Math.max(dr < 0 ? -dr : dr, dg < 0 ? -dg : dg, db < 0 ? -db : db);
+}
+
+export interface RemoveBackgroundOptions {
+  /** 'edges' = 只去与画面边缘连通的区域；'all' = 所有近底色像素 */
+  mode: 'edges' | 'all';
+  /** 每通道与底色的最大差值 */
+  tolerance: number;
+  /** 边缘软化：过渡像素按相似度给半透明 */
+  softEdge: boolean;
+  /** 底色，默认白 */
+  color?: readonly [number, number, number];
+}
+
+export interface RemoveBackgroundResult {
+  /** 被置为全透明的像素数 */
+  removed: number;
+  /** 被软化的边缘像素数 */
+  softened: number;
+}
+
+/**
+ * 按颜色去背景（去白底）。
+ *
+ * 核心是**从画面四边做泛洪**（flood fill），只擦掉「与边缘连通」的近底色区域。
+ * 为什么不简单地「所有近白像素都擦掉」：主体内部的白色（眼睛高光、白衣服、
+ * 白字、反光）会被一起干掉，而这类误杀没法用撤销救回来 —— 它发生在预处理阶段，
+ * 每次重算都会重来一遍。连通性判断是这个问题唯一可靠的解法。
+ *
+ * 用显式栈而不是递归：4K 图的背景可能有上千万像素，递归会直接爆栈。
+ * 用 Uint8Array 记访问标记而不是 Set：正整数索引下它更快也更省。
+ *
+ * 代价：多一张与像素数等长的标记数组（4K 图约 8MB，处理上限那张 64MP 的图约 64MB）。
+ * 这张数组不能省 —— 它区分「本来透明」和「刚被去掉」两种像素，
+ * 而边缘软化必须只处理后者（否则会把原本透明的像素染成半透明，凭空多出一片雾）。
+ *
+ * 边缘软化：抗锯齿边缘是主体色与底色的混合（比如黑主体配白底，边缘是灰）。
+ * 一刀切成不透明会留下一圈灰边，降采样后就是脏边。开启后这些**紧贴背景**的
+ * 过渡像素按「离底色多远」拿到一个半透明 alpha —— 再配合色晕清理把它们的 RGB
+ * 换成主体色，边缘就干净了。
+ *
+ * 两条阈值各管一段：距底色 ≤ 容差 → 整格去掉；容差 < 距底色 ≤ 容差×3 → 半透明。
+ */
+export function removeBackgroundColor(
+  data: Uint8ClampedArray,
+  w: number,
+  h: number,
+  options: RemoveBackgroundOptions,
+): RemoveBackgroundResult {
+  const total = w * h;
+  if (w <= 0 || h <= 0) return { removed: 0, softened: 0 };
+
+  const base = options.color ?? ([255, 255, 255] as const);
+  const tol = Math.max(0, options.tolerance);
+  // 软化上限取容差的 3 倍：再远就已经是主体色了，不该继续给它透明度
+  const softLimit = tol * 3;
+
+  const removed = new Uint8Array(total);
+  const result: RemoveBackgroundResult = { removed: 0, softened: 0 };
+
+  /** 命中判定：透明像素不算（已经是背景），底色范围内的算 */
+  const isBackground = (i: number): boolean => {
+    const o = i * 4;
+    if (data[o + 3] === 0) return false;
+    return distanceTo(base, data[o], data[o + 1], data[o + 2]) <= tol;
+  };
+
+  if (options.mode === 'all') {
+    for (let i = 0; i < total; i += 1) {
+      if (!isBackground(i)) continue;
+      data[i * 4 + 3] = 0;
+      removed[i] = 1;
+      result.removed += 1;
+    }
+  } else {
+    /* 种子：四条边上的近底色像素 */
+    const stack: number[] = [];
+    const push = (i: number): void => {
+      if (removed[i] === 1 || !isBackground(i)) return;
+      removed[i] = 1;
+      stack.push(i);
+    };
+
+    for (let x = 0; x < w; x += 1) {
+      push(x);
+      push((h - 1) * w + x);
+    }
+    for (let y = 0; y < h; y += 1) {
+      push(y * w);
+      push(y * w + w - 1);
+    }
+
+    while (stack.length > 0) {
+      const i = stack.pop() as number;
+      const x = i % w;
+      const y = (i - x) / w;
+      if (x > 0) push(i - 1);
+      if (x < w - 1) push(i + 1);
+      if (y > 0) push(i - w);
+      if (y < h - 1) push(i + w);
+    }
+
+    for (let i = 0; i < total; i += 1) {
+      if (removed[i] === 1) {
+        data[i * 4 + 3] = 0;
+        result.removed += 1;
+      }
+    }
+  }
+
+  if (!options.softEdge || softLimit <= 0) return result;
+
+  /*
+   * 软化：找出所有「紧贴已去除区域、且自己还没到主体色那么远」的像素。
+   * 先把候选收集起来再改 alpha —— 边扫边改会让后面的判定读到已经改过的邻居。
+   */
+  const candidates: number[] = [];
+  for (let i = 0; i < total; i += 1) {
+    if (removed[i] === 1) continue;
+    if (data[i * 4 + 3] === 0) continue; // 本来就是透明的边缘，不重复处理
+
+    const x = i % w;
+    const y = (i - x) / w;
+    const touchesBackground =
+      (x > 0 && removed[i - 1] === 1) ||
+      (x < w - 1 && removed[i + 1] === 1) ||
+      (y > 0 && removed[i - w] === 1) ||
+      (y < h - 1 && removed[i + w] === 1);
+    if (!touchesBackground) continue;
+
+    const o = i * 4;
+    const d = distanceTo(base, data[o], data[o + 1], data[o + 2]);
+    if (d >= softLimit) continue; // 已经基本是主体色了，保持不透明
+    candidates.push(i);
+  }
+
+  for (const i of candidates) {
+    const o = i * 4;
+    const d = distanceTo(base, data[o], data[o + 1], data[o + 2]);
+    // d 越小说明越接近底色 → alpha 越小
+    data[o + 3] = clamp255(Math.round((d / softLimit) * 255));
+    result.softened += 1;
+  }
+
+  return result;
+}
+
 /**
  * 边缘色晕清理（color decontamination）。
  *
@@ -235,6 +391,15 @@ export function preprocess(src: RGBAImage, p: PreprocessSettings): RGBAImageData
 
   const data = new Uint8ClampedArray(src.data);
 
+  // 去背景放在最前面：判定用原图颜色，与你在原图上看到的「白底」一致。
+  // 放到颜色调整之后，一改亮度就会判错（调暗后白底变灰，容差就够不着了）。
+  if (p.removeBackground !== 'none') {
+    removeBackgroundColor(data, src.width, src.height, {
+      mode: p.removeBackground,
+      tolerance: p.bgTolerance,
+      softEdge: p.bgSoftEdge,
+    });
+  }
   if (p.brightness !== 0 || p.contrast !== 0 || p.saturation !== 0) {
     applyColorAdjust(data, p);
   }

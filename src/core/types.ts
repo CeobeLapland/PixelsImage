@@ -79,6 +79,29 @@ export interface PreprocessSettings {
    * 消除抠图残留的背景色（绿幕边、白底灰边）。只在 alphaThreshold 生效后才有意义。
    */
   decontaminate: boolean;
+
+  /**
+   * 按颜色去背景（去白底）。
+   *
+   * 与 alphaThreshold 是两件事：那个看 alpha，**只对本来就有透明通道的图有用**；
+   * 一张白底的 JPEG 每格 alpha 都是 255，阈值对它完全无效。这个看的是颜色。
+   *
+   * - 'none'：关闭
+   * - 'edges'：只去掉**与画面边缘连通**的近底色区域（默认，安全）
+   * - 'all'：去掉所有近底色像素（激进，适合主体里确实没有白的情况）
+   *
+   * 之所以默认「从边缘连通」：主体内部的白色（眼睛高光、白衣服、白字）不与边缘相通，
+   * 就不会被误杀 —— 这是这类功能最容易挨骂的地方。
+   */
+  removeBackground: 'none' | 'edges' | 'all';
+  /** 去背景容差：每通道与底色（白）的最大差值，0-255。越大越激进 */
+  bgTolerance: number;
+  /**
+   * 边缘软化：紧贴背景的过渡像素按「离底色有多远」给半透明。
+   * 抗锯齿边缘本来就是主体色与底色的混合，一刀切成不透明会留下一圈硬白边，
+   * 降采样后就是一圈灰脏边。开启后这些像素变成半透明，再由色晕清理把颜色换回主体色。
+   */
+  bgSoftEdge: boolean;
 }
 
 export interface ConvertSettings {
@@ -207,6 +230,10 @@ export const DEFAULT_PREPROCESS: PreprocessSettings = {
   sharpen: 0,
   alphaThreshold: 255,
   decontaminate: false,
+  removeBackground: 'none',
+  // 24：JPEG 的白底通常在 247-255 之间浮动，加上压缩噪声约 ±10，24 够用又不会吃掉浅灰主体
+  bgTolerance: 24,
+  bgSoftEdge: true,
 };
 
 export const DEFAULT_CONVERT_SETTINGS: ConvertSettings = {
