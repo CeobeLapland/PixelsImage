@@ -24,7 +24,7 @@ import {
   type BatchPreset,
 } from '@/core/batch/presets';
 import {
-  createBatchItems,
+  createBatchItem,
   mergeSettings,
   nextPendingItem,
   patchItem,
@@ -38,9 +38,10 @@ import { createZip, type ZipEntry } from '@/core/batch/zip';
 import { applyCellEdits, applyEditWrites, changesToEdits, cloneEditLayer, countEdits, resampleEditLayer, writeCell, type CellEdit, type CellWrite } from '@/core/edit';
 import { composite } from '@/core/composite';
 import { buildLightnessLadder, nearestLadderIndex } from '@/core/color/ladder';
+import { planLocalRequantize, type LocalRequantizeRequest } from '@/core/color/requantize';
 import { countUsedColors } from '@/core/color/quantize';
 import { toHex } from '@/core/color/space';
-import { decodeImage, blobToDataUrl, dataUrlToBlob, formatBytes, isProbablyImage, loadSourceImage, makeThumbnail } from '@/core/image';
+import { decodeImage, blobToDataUrl, dataUrlToBlob, formatBytes, isProbablyImage, loadSourceImage, makeThumbnail, MAX_ANIMATION_FRAMES, sniffImage, splitAnimatedFrames } from '@/core/image';
 import { checkSeams, type SeamReport } from '@/core/assists/tile';
 import { countSolidCells, planOutline, type OutlineOptions } from '@/core/assists/outline';
 import { planShade, type ShadeOptions } from '@/core/assists/shade';
@@ -76,6 +77,7 @@ import { buildBatchZip, getBatchConverter } from './batch';
 import {
   createEditLayer,
   makeDefaultSettings,
+  PALETTE_MAX_COLORS,
   type ConvertSettings,
   type PreprocessSettings,
   type Palette,
@@ -259,6 +261,11 @@ export interface PaletteSlice {
    * 插入则要整体重映射，为了「排序好看」付这个代价不值。
    */
   addLightnessLadder: (index: number, steps: number) => void;
+  /**
+   * 把一批颜色追加到当前板末尾（同色不重复追加）。
+   * 追加不改已有索引，所以底图与编辑层都不用重映射。
+   */
+  appendPaletteColors: (colors: readonly RGBA[], note?: string) => void;
   /** 重命名自定义板；重名会自动加序号 */
   renamePalette: (id: string, name: string) => void;
   /** 删除自定义板；删的若正是当前板则切回默认板 */
@@ -282,6 +289,11 @@ export interface AssistSlice {
 
   runOutline: (opts: OutlineOptions) => void;
   runShade: (opts: ShadeOptions) => void;
+  /**
+   * 局部换板：把选区内的格子按目标调色板重新映射（可带抖动），
+   * 用到的目标色追加到当前板末尾；其余格子保持原样，结果可撤销。
+   */
+  requantizeSelection: (request: LocalRequantizeRequest) => void;
   /** 检查平铺接缝，结果存进 `seam` 供画布标注 */
   runSeamCheck: () => void;
 }
@@ -323,7 +335,7 @@ export interface BatchSlice {
   setCompareOpen: (open: boolean) => void;
 
   /** 加入队列；顺便生成缩略图（失败也不影响入队） */
-  addBatchFiles: (files: readonly File[]) => void;
+  addBatchFiles: (files: readonly File[]) => Promise<void>;
   removeBatchItem: (id: string) => void;
   clearBatch: () => void;
   /** 设置某一项的逐项参数覆盖 */
@@ -1053,6 +1065,31 @@ const createPaletteSlice: StateCreator<AppStore, [], [], PaletteSlice> = (set, g
       });
     },
 
+    appendPaletteColors: (colors, note) => {
+      if (colors.length === 0) return;
+      const state = get();
+      const target = writable();
+
+      // 同色不重复追加：否则一次局部换板会把板里塞进一堆看不见的重复色
+      const seen = new Set(target.colors.map((c) => `${c[0]},${c[1]},${c[2]}`));
+      const fresh: RGBA[] = [];
+      for (const color of colors) {
+        const key = `${color[0]},${color[1]},${color[2]}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        fresh.push(color);
+      }
+      if (fresh.length === 0) return;
+      if (target.colors.length + fresh.length > PALETTE_MAX_COLORS) {
+        get().pushToast('warn', `追加后会超过 ${PALETTE_MAX_COLORS} 色上限，已取消`);
+        return;
+      }
+
+      const next: Palette = { ...target, colors: [...target.colors, ...fresh] };
+      commitPalette(next, target !== state.palette, note);
+      set((s) => ({ background: Math.min(s.background, next.colors.length - 1) }));
+    },
+
     renamePalette: (id, rawName) => {
       const state = get();
       const target = state.customPalettes[id];
@@ -1180,6 +1217,45 @@ const createAssistSlice: StateCreator<AppStore, [], [], AssistSlice> = (set, get
       applyWrites('自动明暗分层', planShade(baseGrid, editLayer, palette, opts));
     },
 
+    requantizeSelection: (request) => {
+      const state = get();
+      const { baseGrid, editLayer, selection } = state;
+      if (!baseGrid || !editLayer) {
+        state.pushToast('warn', '还没有像素图，先调一下转换参数');
+        return;
+      }
+      if (!selection) {
+        state.pushToast('warn', '先在画布上用「选区」工具（M）框一块区域');
+        return;
+      }
+
+      // 以「眼前看到的」为准：局部操作基于合成结果，而不是底层那次转换
+      const grid = composite(baseGrid, editLayer);
+
+      let result;
+      try {
+        result = planLocalRequantize(grid, state.palette, { ...request, region: selection });
+      } catch (err) {
+        state.pushToast('warn', err instanceof Error ? err.message : String(err));
+        return;
+      }
+
+      if (result.writes.length === 0) {
+        state.pushToast('info', '局部换板：选区里的颜色已经和目标板一致');
+        return;
+      }
+
+      // 先追加颜色（不改已有索引），再把格子指向新槽位
+      if (result.addedColors.length > 0) get().appendPaletteColors(result.addedColors);
+
+      applyWrites(
+        result.addedColors.length > 0
+          ? `局部换板（板 +${result.addedColors.length} 色）`
+          : '局部换板',
+        result.writes,
+      );
+    },
+
     runSeamCheck: () => {
       const { baseGrid, editLayer } = get();
       if (!baseGrid) {
@@ -1214,22 +1290,68 @@ const createBatchSlice: StateCreator<AppStore, [], [], BatchSlice> = (set, get) 
 
   setCompareOpen: (compareOpen) => set({ compareOpen }),
 
-  addBatchFiles: (files) => {
-    const images = files.filter(isProbablyImage);
-    const rejected = files.length - images.length;
-    if (images.length === 0) {
+  addBatchFiles: async (files) => {
+    /*
+     * 动图（GIF / WebP / APNG）先拆成逐帧 PNG 再入队：队列的顺序就是播放顺序，
+     * 每帧带上它在源动图里的时长，GIF / .ase 导出时能还原原始节奏。
+     * 拆不出来就退化成单张 —— 不因为一个怪文件把整批挡在门外。
+     *
+     * 格式判断一律**看文件头字节**（sniffImage），不看扩展名：动图被另存成 `.jpg`
+     * 是常有的事，只看名字会把它当静态图、静默只取第一帧。
+     */
+    const items: BatchItem[] = [];
+    let animations = 0;
+    let animationFrames = 0;
+    let truncatedCount = 0;
+    let rejected = 0;
+    const failures: string[] = [];
+
+    for (const file of files) {
+      let sniff: Awaited<ReturnType<typeof sniffImage>> = null;
+      try {
+        sniff = await sniffImage(file);
+      } catch {
+        sniff = null;
+      }
+
+      // 文件头认不出、名字也不像图片 → 跳过（名字像图片的仍交给解码器，由它给出错误）
+      if (!sniff && !isProbablyImage(file)) {
+        rejected += 1;
+        continue;
+      }
+
+      if (sniff?.mayAnimate) {
+        try {
+          const split = await splitAnimatedFrames(file, MAX_ANIMATION_FRAMES, sniff);
+          if (split) {
+            animations += 1;
+            animationFrames += split.frames.length;
+            if (split.truncated) truncatedCount += 1;
+            for (const frame of split.frames) items.push(createBatchItem(frame.file, frame.delayMs));
+            continue;
+          }
+        } catch (err) {
+          failures.push(`${file.name}：${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+      items.push(createBatchItem(file));
+    }
+
+    if (items.length === 0) {
       get().pushToast('warn', '没有可识别的图片文件');
       return;
     }
 
-    const items = createBatchItems(images);
     set((s) => ({ batchItems: [...s.batchItems, ...items] }));
-    get().pushToast(
-      'info',
-      rejected > 0
-        ? `已加入 ${items.length} 张（跳过 ${rejected} 个非图片文件）`
-        : `已加入 ${items.length} 张待处理`,
-    );
+
+    const parts = [
+      `已加入 ${items.length} 项`,
+      animations > 0 ? `其中 ${animations} 个动图拆成 ${animationFrames} 帧` : '',
+      rejected > 0 ? `跳过 ${rejected} 个非图片文件` : '',
+      truncatedCount > 0 ? `有动图超过 ${MAX_ANIMATION_FRAMES} 帧，只取了前面部分` : '',
+    ].filter(Boolean);
+    get().pushToast('info', parts.join('，'));
+    if (failures.length > 0) get().pushToast('warn', failures[0] as string);
 
     // 缩略图异步补上：解码失败就留空，UI 退化成文件名占位，不影响入队
     for (const item of items) {
@@ -1578,6 +1700,8 @@ const createExportSlice: StateCreator<AppStore, [], [], ExportSlice> = (set, get
       palette: item.result?.palette ?? state.palette,
       // 去掉 .png 后缀：manifest 里写的是「帧名」，不是文件名
       name: (sheetNames[i] ?? item.fileName).replace(/\.png$/i, ''),
+      // 拆帧导入的原始时长：GIF / .ase 动画导出用它，普通图片是 undefined
+      delayMs: item.delayMs,
     }));
 
     return {

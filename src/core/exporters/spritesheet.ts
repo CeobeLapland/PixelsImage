@@ -35,6 +35,11 @@ export interface SheetTile {
   palette: Palette;
   /** 写进坐标 JSON 的名字 */
   name: string;
+  /**
+   * 原始帧时长（毫秒）。只有「从动图拆出来的帧」才有；
+   * GIF / .ase 动画导出用它，缺省时回落为导出选项里的统一延时。
+   */
+  delayMs?: number;
 }
 
 /**

@@ -43,9 +43,21 @@ const CHUNK_CEL = 0x2005;
 /** 单图层时的图层名。带日期会让同一个素材每导一次都不一样，所以用固定名字 */
 const DEFAULT_LAYER_NAME = '图层 1';
 
+/** 默认帧时长（毫秒） */
+const DEFAULT_FRAME_MS = 100;
+
+export interface AseFrameInput {
+  grid: PixelGrid;
+  palette: Palette;
+  /** 该帧时长（毫秒）；不传就用 options.durationMs */
+  durationMs?: number;
+}
+
 export interface AseExportOptions {
   /** 图层名。默认「图层 1」 */
   layerName?: string;
+  /** 每帧时长（毫秒），默认 100 */
+  durationMs?: number;
 }
 
 interface Chunk {
@@ -177,7 +189,7 @@ function makeCelChunk(image: ImageData): Chunk {
 }
 
 /**
- * 把网格写成 `.ase` 字节。
+ * 把网格写成 `.ase` 字节（单帧）。
  *
  * 出图用 `gridToImageData` 渲染 —— 与 PNG 导出走同一条路，
  * 所以「导出的 PNG 与 .ase 里看到的一样」这件事不需要额外保证。
@@ -187,32 +199,81 @@ export function buildAseFile(
   palette: Palette,
   options: AseExportOptions = {},
 ): Uint8Array {
-  const image = gridToImageData(grid, palette);
+  return buildAseFrames([{ grid, palette }], options);
+}
+
+/**
+ * 多帧 `.ase`（M8 动图）。
+ *
+ * 帧序就是 Aseprite 时间轴的顺序；每帧的时长写在**帧头**里（毫秒）。
+ *
+ * 图层块只写在第一帧：Aseprite 与解析器都把图层定义当成「文档级」的，
+ * 每帧重复写会让人在图层列表里看到 N 个同名图层。赛尔块每帧一个，
+ * 引用同一个图层索引 0。
+ *
+ * 不写 frame tag（0x2018）：标签只是给时间段起名，没有它照样能播放与导出；
+ * 而它的字节布局在 spec 里几经改动，写错会让整个文件打不开 —— 收益不足。
+ */
+export function buildAseFrames(
+  frames: readonly AseFrameInput[],
+  options: AseExportOptions = {},
+): Uint8Array {
+  if (frames.length === 0) throw new Error('.ase 至少需要一帧');
+
+  const first = frames[0] as AseFrameInput;
+  const width = first.grid.w;
+  const height = first.grid.h;
+  if (width <= 0 || height <= 0) throw new Error('网格尺寸为 0，无法导出 .ase');
+
+  for (let i = 1; i < frames.length; i += 1) {
+    const frame = frames[i] as AseFrameInput;
+    if (frame.grid.w !== width || frame.grid.h !== height) {
+      throw new Error(
+        `帧尺寸不一致（${frame.grid.w}×${frame.grid.h} 与 ${width}×${height}）：.ase 要求每帧同尺寸`,
+      );
+    }
+  }
+
   const layerName = options.layerName ?? DEFAULT_LAYER_NAME;
+  const durations = frames.map((frame) =>
+    clampDuration(frame.durationMs ?? options.durationMs ?? DEFAULT_FRAME_MS),
+  );
 
-  const chunks = [
-    packChunk(CHUNK_LAYER, makeLayerChunk(layerName).data),
-    packChunk(CHUNK_CEL, makeCelChunk(image).data),
-  ];
-  const frameBody = chunks.reduce((sum, c) => sum + c.length, 0);
+  const layerChunk = packChunk(CHUNK_LAYER, makeLayerChunk(layerName).data);
+  const frameChunks = frames.map((frame, index) => {
+    const chunks: Uint8Array[] = [];
+    if (index === 0) chunks.push(layerChunk);
+    chunks.push(
+      packChunk(CHUNK_CEL, makeCelChunk(gridToImageData(frame.grid, frame.palette)).data),
+    );
+    return chunks;
+  });
 
-  const w = new ByteWriter(HEADER_SIZE + FRAME_HEADER_SIZE + frameBody);
+  const frameBodies = frameChunks.map((chunks) => ({
+    body: chunks.reduce((sum, c) => sum + c.length, 0),
+    chunks,
+  }));
+  const total = frameBodies.reduce((sum, f) => sum + f.body, 0);
+
+  const w = new ByteWriter(HEADER_SIZE + frames.length * FRAME_HEADER_SIZE + total);
 
   /* ---------------- 文件头 ---------------- */
-  w.u32(HEADER_SIZE + FRAME_HEADER_SIZE + frameBody); // 文件总长（读者一般不看，但写对没坏处）
+  const fileSize =
+    HEADER_SIZE + frames.length * FRAME_HEADER_SIZE + total;
+  w.u32(fileSize);
   w.u16(MAGIC);
-  w.u16(1); // 帧数
-  w.u16(image.width);
-  w.u16(image.height);
+  w.u16(frames.length); // 帧数
+  w.u16(width);
+  w.u16(height);
   w.u16(32); // 色深：32 = RGBA
   w.u32(1); // flags：bit0 = 图层不透明度有效
-  w.u16(0); // 帧间隔（毫秒），单帧无所谓
+  w.u16(durations[0] as number); // 默认帧间隔（毫秒），老字段，仍被不少工具读
   w.u32(0);
   w.u32(0);
   w.u8(0); // 索引模式下的透明索引；RGBA 下无意义
   w.zeros(3);
   w.u16(0); // 调色板颜色数：0 = RGBA 无调色板
-  w.u8(0); // 像素宽（非方形像素才用）
+  w.u8(0); // 像素宽
   w.u8(0); // 像素高
   w.i16(0); // 网格 x
   w.i16(0); // 网格 y
@@ -220,15 +281,24 @@ export function buildAseFile(
   w.u16(0); // 网格高
   w.zeros(84); // 保留给将来
 
-  /* ---------------- 帧头 ---------------- */
-  w.u32(FRAME_HEADER_SIZE + frameBody); // 本帧总长（含帧头，与块头的含义不同）
-  w.u16(FRAME_MAGIC);
-  w.u16(0xffff); // 旧字段：始终 0xFFFF，表示后面用「新字段」的块数
-  w.u16(0); // 帧时长（毫秒）
-  w.zeros(2); // 保留
-  w.u32(chunks.length); // 新字段：块数
+  /* ---------------- 各帧 ---------------- */
+  for (let i = 0; i < frameBodies.length; i += 1) {
+    const frame = frameBodies[i] as { body: number; chunks: Uint8Array[] };
+    w.u32(FRAME_HEADER_SIZE + frame.body); // 本帧总长（含帧头，与块头的含义不同）
+    w.u16(FRAME_MAGIC);
+    w.u16(0xffff); // 旧字段：始终 0xFFFF，表示后面用「新字段」的块数
+    w.u16(durations[i] as number); // 帧时长（毫秒）
+    w.zeros(2); // 保留
+    w.u32(frame.chunks.length); // 新字段：块数
 
-  for (const chunk of chunks) w.bytes(chunk);
+    for (const chunk of frame.chunks) w.bytes(chunk);
+  }
 
   return w.finish();
+}
+
+/** 帧时长是 WORD（0-65535 毫秒） */
+function clampDuration(ms: number): number {
+  if (!Number.isFinite(ms)) return DEFAULT_FRAME_MS;
+  return Math.max(0, Math.min(0xffff, Math.round(ms)));
 }

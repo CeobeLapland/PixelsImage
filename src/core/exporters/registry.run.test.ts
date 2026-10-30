@@ -288,12 +288,134 @@ describe('Aseprite 导出器', () => {
   });
 });
 
+describe('GIF 动画导出器', () => {
+  it('队列为空时明确报错', async () => {
+    await expect(run('gif', makeContext())).rejects.toThrow('批量队列');
+  });
+
+  it('产出 .gif，头部是 GIF89a，画布等于帧尺寸', async () => {
+    const tiles = [
+      { grid: makeGrid(4, 4), palette: PALETTE, name: 'a' },
+      { grid: makeGrid(4, 4), palette: PALETTE, name: 'b' },
+    ];
+    const result = await run('gif', makeContext({ batchTiles: tiles }));
+
+    expect(result.files).toHaveLength(1);
+    expect(result.files[0].name).toBe('hero_anim.gif');
+    expect(result.files[0].blob.type).toBe('image/gif');
+
+    const bytes = new Uint8Array(await result.files[0].blob.arrayBuffer());
+    expect(String.fromCharCode(...Array.from(bytes.subarray(0, 6)))).toBe('GIF89a');
+    const view = new DataView(bytes.buffer);
+    expect(view.getUint16(6, true)).toBe(4); // 画布宽
+    expect(view.getUint16(8, true)).toBe(4); // 画布高
+    expect(result.note).toContain('2 帧');
+  });
+
+  it('放大倍数写进画布尺寸', async () => {
+    const tiles = [
+      { grid: makeGrid(4, 4), palette: PALETTE, name: 'a' },
+      { grid: makeGrid(4, 4), palette: PALETTE, name: 'b' },
+    ];
+    const result = await run('gif', makeContext({ batchTiles: tiles }), { scale: 3 });
+    const bytes = new Uint8Array(await result.files[0].blob.arrayBuffer());
+    const view = new DataView(bytes.buffer);
+    expect(view.getUint16(6, true)).toBe(12);
+    expect(view.getUint16(8, true)).toBe(12);
+  });
+
+  it('帧尺寸不一致时报错，并提示「裁透明边」这个常见原因', async () => {
+    const tiles = [
+      { grid: makeGrid(4, 4), palette: PALETTE, name: 'a' },
+      { grid: makeGrid(4, 3), palette: PALETTE, name: 'b' },
+    ];
+    await expect(run('gif', makeContext({ batchTiles: tiles }))).rejects.toThrow(/裁透明边/);
+  });
+
+  it('拆帧导入的原始时长优先于统一延时', async () => {
+    const tiles = [
+      { grid: makeGrid(2, 2), palette: PALETTE, name: 'a', delayMs: 50 },
+      { grid: makeGrid(2, 2), palette: PALETTE, name: 'b', delayMs: 200 },
+    ];
+    const result = await run('gif', makeContext({ batchTiles: tiles }), { delay: 500 });
+    // 50ms / 200ms → 5 / 20 个 1/100 秒
+    const bytes = new Uint8Array(await result.files[0].blob.arrayBuffer());
+    const delays: number[] = [];
+    for (let i = 0; i < bytes.length - 12; i += 1) {
+      // GCE：21 F9 04 <packed> <delay lo> <delay hi> ...
+      if (
+        bytes[i] === 0x21 &&
+        bytes[i + 1] === 0xf9 &&
+        bytes[i + 2] === 0x04
+      ) {
+        delays.push((bytes[i + 4] as number) | ((bytes[i + 5] as number) << 8));
+      }
+    }
+    expect(delays).toEqual([5, 20]);
+    expect(result.note).toContain('1 位透明');
+  });
+});
+
+describe('Aseprite 动画导出器', () => {
+  it('队列为空时明确报错', async () => {
+    await expect(run('aseAnim', makeContext())).rejects.toThrow('批量队列');
+  });
+
+  it('产出多帧 .ase，帧数写在头部', async () => {
+    const tiles = [
+      { grid: makeGrid(4, 3), palette: PALETTE, name: 'a' },
+      { grid: makeGrid(4, 3), palette: PALETTE, name: 'b' },
+      { grid: makeGrid(4, 3), palette: PALETTE, name: 'c' },
+    ];
+    const result = await run('aseAnim', makeContext({ batchTiles: tiles }));
+    expect(result.files[0].name).toBe('hero_anim.ase');
+
+    const bytes = new Uint8Array(await result.files[0].blob.arrayBuffer());
+    const view = new DataView(bytes.buffer);
+    expect(view.getUint16(4, true)).toBe(0xa5e0);
+    expect(view.getUint16(6, true)).toBe(3); // 帧数
+    expect(result.note).toContain('3 帧');
+  });
+
+  it('每帧时长：有原始值就用原始值，没有就用统一延时', async () => {
+    const tiles = [
+      { grid: makeGrid(2, 2), palette: PALETTE, name: 'a', delayMs: 60 },
+      { grid: makeGrid(2, 2), palette: PALETTE, name: 'b' },
+    ];
+    const result = await run('aseAnim', makeContext({ batchTiles: tiles }), { delay: 140 });
+    const bytes = new Uint8Array(await result.files[0].blob.arrayBuffer());
+    const view = new DataView(bytes.buffer);
+
+    expect(view.getUint16(18, true)).toBe(60); // 头部默认帧间隔 = 第一帧
+    expect(view.getUint16(128 + 8, true)).toBe(60); // 第一帧头里的时长
+    const firstFrameSize = view.getUint32(128, true);
+    expect(view.getUint16(128 + firstFrameSize + 8, true)).toBe(140); // 第二帧
+  });
+
+  it('帧尺寸不一致时报错', async () => {
+    const tiles = [
+      { grid: makeGrid(2, 2), palette: PALETTE, name: 'a' },
+      { grid: makeGrid(3, 3), palette: PALETTE, name: 'b' },
+    ];
+    await expect(run('aseAnim', makeContext({ batchTiles: tiles }))).rejects.toThrow(/尺寸/);
+  });
+});
+
 describe('选项表与执行的一致性', () => {
   it('每个导出器的默认选项都能直接跑通（图集除外，它需要队列）', async () => {
     const ctx = makeContext({
       batchTiles: [{ grid: makeGrid(4, 4), palette: PALETTE, name: 'a' }],
     });
-    for (const id of ['png', 'gridJson', 'spritesheet', 'blueprintPng', 'blueprintCsv', 'ase']) {
+    for (const id of [
+      'png',
+      'gridJson',
+      'spritesheet',
+      'blueprintPng',
+      'blueprintCsv',
+      'ase',
+      'aseAnim',
+      'gif',
+    ]) {
       const result = await run(id, ctx);
       expect(result.files.length).toBeGreaterThan(0);
       for (const file of result.files) {

@@ -218,6 +218,9 @@ export function BatchPanel(): JSX.Element {
         </button>
         <p className="note note--tight">
           也可以把一批文件直接拖到这里。队列项共用下方这套参数，个别项可以单独改尺寸。
+          <br />
+          拖进 <b>GIF / WebP 动图</b>会自动拆成逐帧入队（需要 Chrome / Edge）——队列顺序就是动画帧顺序，
+          导出里选「GIF 动画」或「Aseprite 动画」就能按这个顺序出片。
         </p>
       </div>
 

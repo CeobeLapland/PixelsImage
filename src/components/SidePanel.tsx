@@ -9,6 +9,7 @@ import { ConvertPanel } from './ConvertPanel';
 import { ExportPanel } from './ExportPanel';
 import { ExtractPanel } from './ExtractPanel';
 import { LayerPanel } from './LayerPanel';
+import { LocalPanel } from './LocalPanel';
 import { PaletteIoPanel } from './PaletteIoPanel';
 import { PalettePanel } from './PalettePanel';
 import { PreprocessPanel } from './PreprocessPanel';
@@ -54,7 +55,8 @@ const MILESTONES: { id: string; label: string; state: MileState }[] = [
   { id: 'M4', label: '智能辅助', state: 'done' },
   { id: 'M5', label: '批量处理', state: 'done' },
   { id: 'M6', label: '导出扩展', state: 'done' },
-  { id: 'M7', label: '打磨与存档', state: 'doing' },
+  { id: 'M7', label: '打磨与存档', state: 'done' },
+  { id: 'M8', label: '动图（序列帧）', state: 'done' },
 ];
 
 /* --------------------------------------------------------------- 面板 */
@@ -72,6 +74,7 @@ export function SidePanel(): JSX.Element {
   const batchTotal = useApp((s) => s.batchItems.length);
   const batchDone = useApp((s) => s.batchItems.filter((i) => i.status === 'done').length);
   const presetCount = useApp((s) => s.convertPresets.length);
+  const selection = useApp((s) => s.selection);
 
   const sourceBytes = source
     ? source.imageData.width * source.imageData.height * 4 +
@@ -150,6 +153,16 @@ export function SidePanel(): JSX.Element {
           <AssistsPanel />
         </Section>
 
+        <Section
+          title="局部转换"
+          defaultOpen={false}
+          badge={
+            selection ? <span className="badge">{`${selection.w}×${selection.h}`}</span> : undefined
+          }
+        >
+          <LocalPanel />
+        </Section>
+
         <Section title="导出" badge={hasResult ? <span className="badge">就绪</span> : undefined}>
           <ExportPanel />
         </Section>
@@ -189,9 +202,8 @@ export function SidePanel(): JSX.Element {
             ))}
           </ul>
           <p className="note">
-            当前处于 <b>M6</b>：在批量处理之上补全了导出 ——
-            PNG / 网格 JSON / 精灵图集 / Minecraft 建造蓝图（标尺图纸 + CSV + 色号对照表），
-            另有复制到剪贴板。GIF 动画按需要再补，暂未做。
+            M0–M8 已完成：转换 / 编辑器 / 调色板 / 辅助 / 批量 / 导出 / 存档 / 动图。
+            当前在补可选扩展（局部转换等）。
           </p>
         </Section>
       </div>

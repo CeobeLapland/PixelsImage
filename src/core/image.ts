@@ -8,6 +8,7 @@
  * 见 docs/DESIGN.md §8 性能策略
  */
 
+import { imageDataToPngBlob } from './exporters/png';
 import type { SourceImage } from './types';
 
 /** 显示位图的最长边上限 */
@@ -223,6 +224,253 @@ export async function makeThumbnail(file: File | Blob): Promise<ImageBitmap | nu
 /** 可解码的图片类型（用于文件选择与拖拽过滤） */
 export const ACCEPTED_TYPES =
   'image/png,image/jpeg,image/webp,image/gif,image/bmp,image/avif';
+
+/* -------------------------------------------------------------- 动图拆帧 */
+
+/**
+ * 拆帧的上限。超过就只取前面的帧 —— 一个 1000 帧的 GIF 会把队列塞爆，
+ * 而队列本身不做虚拟滚动（见 DESIGN §8），几百项之后就没法用了。
+ */
+export const MAX_ANIMATION_FRAMES = 240;
+
+/** 嗅探只读文件头，够覆盖所有格式的签名与 APNG 的 acTL 块 */
+const SNIFF_BYTES = 64 * 1024;
+
+export type ImageKind = 'png' | 'apng' | 'jpeg' | 'gif' | 'webp' | 'bmp' | 'avif';
+
+export interface ImageSniff {
+  kind: ImageKind;
+  /** 交给解码器的 MIME。APNG 用 image/png（比 image/apng 更通用） */
+  mime: string;
+  /**
+   * 这个容器**可能**带多帧。GIF / WebP 静态图也存在，所以这里不保证真有动画，
+   * 真正的帧数要解码后才知道。
+   */
+  mayAnimate: boolean;
+}
+
+function asciiAt(bytes: Uint8Array, offset: number, text: string): boolean {
+  if (offset + text.length > bytes.length) return false;
+  for (let i = 0; i < text.length; i += 1) {
+    if (bytes[offset + i] !== text.charCodeAt(i)) return false;
+  }
+  return true;
+}
+
+function readU32BE(bytes: Uint8Array, offset: number): number {
+  return (
+    ((bytes[offset] ?? 0) << 24) |
+    ((bytes[offset + 1] ?? 0) << 16) |
+    ((bytes[offset + 2] ?? 0) << 8) |
+    (bytes[offset + 3] ?? 0)
+  ) >>> 0;
+}
+
+/** PNG 里有没有 acTL（APNG 的动画控制块）。它必须在 IDAT 之前出现 */
+function pngHasActl(bytes: Uint8Array): boolean {
+  let p = 8;
+  while (p + 8 <= bytes.length) {
+    const length = readU32BE(bytes, p);
+    const type = String.fromCharCode(
+      bytes[p + 4] as number,
+      bytes[p + 5] as number,
+      bytes[p + 6] as number,
+      bytes[p + 7] as number,
+    );
+    if (type === 'acTL') return true;
+    if (type === 'IDAT' || type === 'IEND') return false;
+    p += 12 + length;
+  }
+  return false;
+}
+
+/**
+ * 按**文件头字节**判断格式，不看扩展名与 MIME。
+ *
+ * 为什么要这样：动图经常被「伪装」成 `.jpg` / `.png`（从网页另存、聊天软件转发都会发生），
+ * 只看扩展名就会把它当静态图，最后只拿到第一帧 —— 而且完全没有任何提示。
+ * 读 64KB 的代价可以忽略，换来的是「文件叫什么名字都不影响识别」。
+ */
+export async function sniffImage(file: Blob): Promise<ImageSniff | null> {
+  const head = new Uint8Array(await file.slice(0, SNIFF_BYTES).arrayBuffer());
+  if (head.length < 12) return null;
+
+  if (asciiAt(head, 0, 'GIF87a') || asciiAt(head, 0, 'GIF89a')) {
+    return { kind: 'gif', mime: 'image/gif', mayAnimate: true };
+  }
+  if (asciiAt(head, 0, 'RIFF') && asciiAt(head, 8, 'WEBP')) {
+    return { kind: 'webp', mime: 'image/webp', mayAnimate: true };
+  }
+  if (asciiAt(head, 0, '\u0089PNG\r\n\u001a\n')) {
+    return pngHasActl(head)
+      ? { kind: 'apng', mime: 'image/png', mayAnimate: true }
+      : { kind: 'png', mime: 'image/png', mayAnimate: false };
+  }
+  if (head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff) {
+    return { kind: 'jpeg', mime: 'image/jpeg', mayAnimate: false };
+  }
+  if (head[0] === 0x42 && head[1] === 0x4d) {
+    return { kind: 'bmp', mime: 'image/bmp', mayAnimate: false };
+  }
+  // AVIF：'ftyp' 盒在 4..7，主品牌在 8..11；'avis' 是动画品牌
+  if (asciiAt(head, 4, 'ftyp')) {
+    if (asciiAt(head, 8, 'avif') || asciiAt(head, 8, 'avis')) {
+      return { kind: 'avif', mime: 'image/avif', mayAnimate: asciiAt(head, 8, 'avis') };
+    }
+  }
+
+  return null;
+}
+
+/** 浏览器是否提供 WebCodecs 的拆帧能力（Chrome / Edge 有，Firefox 目前没有） */
+export function supportsFrameDecoding(): boolean {
+  return typeof ImageDecoder !== 'undefined';
+}
+
+export interface AnimationProbe {
+  /** 帧总数 */
+  frameCount: number;
+  /** 循环次数；0 = 无限 */
+  loopCount: number;
+  /** 解码器应使用的 MIME */
+  mime: string;
+}
+
+/**
+ * 只看「是不是真动图、有几帧」，不解码像素。
+ *
+ * 单图入口（把文件拖到画布）需要这个：静态 GIF 应该进编辑器，
+ * 动图则要转去批量队列。`track.frameCount` 在 tracks.ready 后就有，
+ * 不用逐帧解码 —— 那是拆帧时才付的代价。
+ *
+ * 不做的事：浏览器没有 ImageDecoder 时抛错（由调用方决定是提示还是降级）。
+ */
+export async function probeAnimation(
+  file: File,
+  known?: ImageSniff | null,
+): Promise<AnimationProbe | null> {
+  const sniff = known === undefined ? await sniffImage(file) : known;
+  if (!sniff || !sniff.mayAnimate) return null;
+  if (!supportsFrameDecoding()) throw new Error('当前浏览器不支持拆帧（需要 Chrome / Edge）');
+
+  const decoder = new ImageDecoder({
+    // 只是为了读 track 的帧数；这里把整份数据交过去是最稳的方式（ImageDecoder 只接受 buffer）
+    data: await file.arrayBuffer(),
+    type: sniff.mime,
+    preferAnimation: true,
+  });
+  try {
+    await decoder.tracks.ready;
+    const track = decoder.tracks.selectedTrack;
+    const frameCount = track?.frameCount ?? 0;
+    if (!track || frameCount <= 1) return null;
+    const repetition = track.repetitionCount;
+    return {
+      frameCount,
+      loopCount: Number.isFinite(repetition) ? Math.max(0, repetition) : 0,
+      mime: sniff.mime,
+    };
+  } finally {
+    decoder.close();
+  }
+}
+
+/** 从动图拆出来的一帧：已经编码成 PNG 文件，能直接当普通图片入队 */
+export interface AnimationFrameFile {
+  file: File;
+  /** 这一帧在源动图里的时长（毫秒） */
+  delayMs: number;
+}
+
+export interface SplitAnimationResult {
+  frames: AnimationFrameFile[];
+  /** 源动图声明的循环次数；0 = 无限循环 */
+  loopCount: number;
+  /** 源动图的帧总数（可能大于 frames.length） */
+  totalFrames: number;
+  /** 是否因为上限截断了 */
+  truncated: boolean;
+}
+
+/**
+ * 把动图拆成逐帧 PNG 文件。
+ *
+ * 返回 null = 不是动图（单帧），调用方按普通图片处理。
+ * 浏览器没有 ImageDecoder 时**直接抛错**而不返回 null：
+ * 静默只取第一帧会让用户以为动图「就是这样」，这比报错更糟。
+ *
+ * 为什么不把帧留在内存里：拆帧发生在导入时，而队列里的项要能单张打开编辑器、
+ * 能重新解码、能进 zip —— 统一成 PNG 文件后，这些路径一行都不用改。
+ */
+export async function splitAnimatedFrames(
+  file: File,
+  maxFrames = MAX_ANIMATION_FRAMES,
+  known?: ImageSniff | null,
+): Promise<SplitAnimationResult | null> {
+  const sniff = known === undefined ? await sniffImage(file) : known;
+  if (!sniff || !sniff.mayAnimate) return null;
+
+  if (!supportsFrameDecoding()) {
+    throw new Error(
+      '当前浏览器不支持拆帧（需要 Chrome / Edge）。' +
+        '可以先在别处把动图导出成 PNG 序列，再把这些 PNG 一次拖进来',
+    );
+  }
+
+  const decoder = new ImageDecoder({
+    data: await file.arrayBuffer(),
+    type: sniff.mime,
+    preferAnimation: true,
+  });
+
+  try {
+    await decoder.tracks.ready;
+    const track = decoder.tracks.selectedTrack;
+    const total = track?.frameCount ?? 0;
+    if (!track || total <= 1) return null;
+
+    const take = Math.min(total, Math.max(1, maxFrames));
+    const digits = String(take).length;
+    const stem = file.name.replace(/\.[^.]+$/, '') || 'frame';
+
+    const frames: AnimationFrameFile[] = [];
+    for (let i = 0; i < take; i += 1) {
+      // completeFramesOnly：等这一帧能完整呈现再交给我们。
+      // GIF 的「只更新一小块」在这里已经由解码器合成为整帧，直接整张画上画布即可
+      const { image } = await decoder.decode({ frameIndex: i, completeFramesOnly: true });
+      try {
+        const w = image.displayWidth;
+        const h = image.displayHeight;
+        if (w <= 0 || h <= 0) throw new Error(`动图的第 ${i + 1} 帧尺寸为 0`);
+
+        const canvas = getScratchCanvas(w, h);
+        const ctx = get2d(canvas);
+        ctx.clearRect(0, 0, w, h);
+        ctx.drawImage(image, 0, 0);
+
+        const blob = await imageDataToPngBlob(ctx.getImageData(0, 0, w, h));
+        const name = `${stem}_${String(i + 1).padStart(digits, '0')}.png`;
+        frames.push({
+          file: new File([blob], name, { type: 'image/png', lastModified: Date.now() }),
+          // ImageDecoder 给的是微秒；GIF 的时长精度本来就是 10ms，四舍五入到毫秒足够
+          delayMs: Math.max(0, Math.round((image.duration ?? 0) / 1000)),
+        });
+      } finally {
+        image.close();
+      }
+    }
+
+    const repetition = track.repetitionCount;
+    return {
+      frames,
+      loopCount: Number.isFinite(repetition) ? Math.max(0, repetition) : 0,
+      totalFrames: total,
+      truncated: total > take,
+    };
+  } finally {
+    decoder.close();
+  }
+}
 
 /**
  * Blob → data URL。

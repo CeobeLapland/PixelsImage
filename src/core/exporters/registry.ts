@@ -11,6 +11,7 @@
 
 import { baseNameOf, sanitizeFileName } from '../batch/naming';
 import { toHex } from '../color/space';
+import { encodeGif } from '../gif/encode';
 import type { Palette, PixelGrid } from '../types';
 import {
   blueprintSource,
@@ -22,7 +23,7 @@ import {
   type BlueprintCsvOptions,
   type BlueprintOptions,
 } from './blueprint';
-import { buildAseFile } from './ase';
+import { buildAseFile, buildAseFrames } from './ase';
 import type { BlockMap } from './blocks';
 import {
   buildGridJson,
@@ -311,6 +312,118 @@ const aseExporter: Exporter = {
   },
 };
 
+/**
+ * 动画帧尺寸必须一致：GIF 与 .ase 的画布只有一张，尺寸不同的帧没法各画各的。
+ * 最常见的触发原因是开了「裁透明边」——每帧裁掉的量不同，尺寸就对不齐了。
+ */
+function requireUniformTiles(tiles: readonly SheetTile[]): { w: number; h: number } {
+  const first = tiles[0];
+  if (!first) throw new Error('批量队列里还没有已完成的图，先去「批量处理」跑一轮');
+  const w = first.grid.w;
+  const h = first.grid.h;
+  for (let i = 1; i < tiles.length; i += 1) {
+    const tile = tiles[i] as SheetTile;
+    if (tile.grid.w !== w || tile.grid.h !== h) {
+      throw new Error(
+        `第 ${i + 1} 帧是 ${tile.grid.w}×${tile.grid.h}，与第 1 帧的 ${w}×${h} 不一致。` +
+          '动画要求每帧同尺寸 —— 如果开着「裁透明边」，各帧裁掉的量不同就会这样，关掉重跑一遍',
+      );
+    }
+  }
+  return { w, h };
+}
+
+/** 队列里各帧的原始时长是否都不同（用于导出说明） */
+function hasNativeDurations(tiles: readonly SheetTile[]): boolean {
+  return tiles.some((tile) => tile.delayMs !== undefined);
+}
+
+const aseAnimExporter: Exporter = {
+  id: 'aseAnim',
+  label: 'Aseprite 动画',
+  description: '多帧 .ase：队列顺序就是帧序，每帧时长写进时间轴',
+  needs: 'batch',
+  options: [
+    {
+      kind: 'number',
+      key: 'delay',
+      label: '帧时长（毫秒）',
+      min: 10,
+      max: 1000,
+      default: 100,
+      hint: '从动图拆出来的帧优先用它自己的原始时长，这里只是后备值',
+    },
+  ],
+  async run(ctx, values) {
+    const { w, h } = requireUniformTiles(ctx.batchTiles);
+    const delay = Math.round(numOf(values, 'delay', 100));
+    const bytes = buildAseFrames(
+      ctx.batchTiles.map((tile) => ({
+        grid: tile.grid,
+        palette: tile.palette,
+        durationMs: tile.delayMs ?? delay,
+      })),
+      { durationMs: delay },
+    );
+    const blob = new Blob([bytes.slice().buffer as ArrayBuffer], { type: 'application/octet-stream' });
+    return {
+      files: [{ name: `${stemOf(ctx.sourceName)}_anim.ase`, blob }],
+      note:
+        `${ctx.batchTiles.length} 帧 · ${w}×${h} · 1 图层` +
+        (hasNativeDurations(ctx.batchTiles) ? ' · 按原始时长' : ` · 每帧 ${delay}ms`),
+    };
+  },
+};
+
+const gifExporter: Exporter = {
+  id: 'gif',
+  label: 'GIF 动画',
+  description: '把队列里已完成的图按顺序编成动图（GIF 只支持全透明 / 全不透明）',
+  needs: 'batch',
+  options: [
+    { kind: 'number', key: 'delay', label: '帧延时（毫秒）', min: 10, max: 1000, default: 100, hint: '拆帧导入的帧优先用原始时长' },
+    { kind: 'number', key: 'loop', label: '循环次数', min: 0, max: 20, default: 0, hint: '0 = 无限循环' },
+    { kind: 'number', key: 'scale', label: '放大倍数', min: 1, max: 8, default: 1 },
+    {
+      kind: 'toggle',
+      key: 'transparent',
+      label: '保留透明',
+      hint: 'GIF 没有半透明：开启时按 alpha 128 切成全透明或全不透明',
+      default: true,
+    },
+  ],
+  async run(ctx, values) {
+    const { w, h } = requireUniformTiles(ctx.batchTiles);
+    const delay = Math.round(numOf(values, 'delay', 100));
+    const loop = Math.round(numOf(values, 'loop', 0));
+    const scale = Math.round(numOf(values, 'scale', 1));
+    const transparent = boolOf(values, 'transparent', true);
+
+    const bytes = encodeGif(
+      ctx.batchTiles.map((tile) => ({
+        grid: tile.grid,
+        palette: tile.palette,
+        delayMs: tile.delayMs ?? delay,
+      })),
+      { delayMs: delay, loopCount: loop, transparent, alphaThreshold: 128, scale },
+    );
+
+    const side = Math.max(1, Math.round(scale));
+    return {
+      files: [
+        {
+          name: `${stemOf(ctx.sourceName)}_anim.gif`,
+          blob: new Blob([bytes.slice().buffer as ArrayBuffer], { type: 'image/gif' }),
+        },
+      ],
+      note:
+        `${ctx.batchTiles.length} 帧 · ${w * side}×${h * side}px · ` +
+        (loop === 0 ? '无限循环' : `循环 ${loop} 次`) +
+        (transparent ? ' · 1 位透明' : ' · 不透明'),
+    };
+  },
+};
+
 const blueprintCsvExporter: Exporter = {
   id: 'blueprintCsv',
   label: '建造清单 CSV',
@@ -359,6 +472,8 @@ export const EXPORTERS: readonly Exporter[] = [
   pngExporter,
   gridJsonExporter,
   aseExporter,
+  aseAnimExporter,
+  gifExporter,
   spritesheetExporter,
   blueprintPngExporter,
   blueprintCsvExporter,

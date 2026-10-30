@@ -13,7 +13,7 @@ import { describe, expect, it } from 'vitest';
 
 import { makePalette, BLUE, RED, WHITE } from '@/core/__testing__/fixtures';
 import { createGrid, type PixelGrid } from '@/core/types';
-import { buildAseFile } from './ase';
+import { buildAseFile, buildAseFrames } from './ase';
 
 const PALETTE = makePalette('t', [RED, WHITE, BLUE]);
 
@@ -261,5 +261,137 @@ describe('buildAseFile：像素与行序', () => {
     expect(parsed.width).toBe(1);
     expect(parsed.height).toBe(1);
     expect(parsed.pixels.length).toBe(4);
+  });
+});
+
+describe('buildAseFrames：多帧（M8 动图）', () => {
+  interface FrameView {
+    duration: number;
+    chunkIds: number[];
+    pixels: Uint8Array;
+  }
+
+  interface MultiView {
+    fileSize: number;
+    frameCount: number;
+    speed: number;
+    frames: FrameView[];
+  }
+
+  /** 按 spec 顺序走完全部帧；与单帧那个读取器独立，只看多帧关心的字段 */
+  function readMulti(bytes: Uint8Array): MultiView {
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const u16 = (o: number): number => view.getUint16(o, true);
+    const u32 = (o: number): number => view.getUint32(o, true);
+
+    const fileSize = u32(0);
+    const frameCount = u16(6);
+    // 头部：fileSize(4) magic(2) frames(2) w(2) h(2) depth(2) flags(4) → 默认帧间隔在 18
+    const speed = u16(18);
+
+    const frames: FrameView[] = [];
+    let p = 128;
+    for (let f = 0; f < frameCount; f += 1) {
+      const frameSize = u32(p);
+      expect(u16(p + 4)).toBe(0xf1fa);
+      const duration = u16(p + 8);
+      const chunkCount = u32(p + 12);
+
+      const chunkIds: number[] = [];
+      let pixels: Uint8Array = new Uint8Array(0);
+      let c = p + 16;
+      for (let i = 0; i < chunkCount; i += 1) {
+        const size = u32(c);
+        const id = u16(c + 4);
+        chunkIds.push(id);
+        if (id === 0x2005) {
+          const body = c + 6;
+          const w = u16(body + 16);
+          const h = u16(body + 18);
+          pixels = bytes.subarray(body + 20, body + 20 + w * h * 4);
+        }
+        c += size;
+      }
+
+      frames.push({ duration, chunkIds, pixels });
+      p += frameSize;
+    }
+
+    return { fileSize, frameCount, speed, frames };
+  }
+
+  it('头部帧数、默认帧间隔与文件总长都对', () => {
+    const a = makeGrid(3, 2);
+    const b = makeGrid(3, 2);
+    const bytes = buildAseFrames([
+      { grid: a, palette: PALETTE, durationMs: 120 },
+      { grid: b, palette: PALETTE, durationMs: 80 },
+    ]);
+    const parsed = readMulti(bytes);
+
+    expect(parsed.fileSize).toBe(bytes.length);
+    expect(parsed.frameCount).toBe(2);
+    // 老字段「默认帧间隔」取第一帧的时长
+    expect(parsed.speed).toBe(120);
+    expect(parsed.frames.map((f) => f.duration)).toEqual([120, 80]);
+  });
+
+  it('图层块只写在第一帧，赛尔块每帧都有', () => {
+    const parsed = readMulti(
+      buildAseFrames([
+        { grid: makeGrid(2, 2), palette: PALETTE },
+        { grid: makeGrid(2, 2), palette: PALETTE },
+        { grid: makeGrid(2, 2), palette: PALETTE },
+      ]),
+    );
+
+    expect(parsed.frames[0]?.chunkIds).toEqual([0x2004, 0x2005]);
+    expect(parsed.frames[1]?.chunkIds).toEqual([0x2005]);
+    expect(parsed.frames[2]?.chunkIds).toEqual([0x2005]);
+  });
+
+  it('每一帧都带自己的像素（不是复用第一帧）', () => {
+    const first = createGrid(2, 1);
+    first.indices.fill(0);
+    first.alpha.fill(255);
+
+    const second = createGrid(2, 1);
+    second.indices.fill(2);
+    second.alpha.fill(255);
+
+    const parsed = readMulti(
+      buildAseFrames([
+        { grid: first, palette: PALETTE },
+        { grid: second, palette: PALETTE },
+      ]),
+    );
+
+    // 第一帧首像素红，第二帧首像素蓝
+    expect([...parsed.frames[0]!.pixels.subarray(0, 4)]).toEqual([255, 0, 0, 255]);
+    expect([...parsed.frames[1]!.pixels.subarray(0, 4)]).toEqual([0, 0, 255, 255]);
+  });
+
+  it('时长被钳到 WORD 范围', () => {
+    const parsed = readMulti(
+      buildAseFrames([
+        { grid: makeGrid(1, 1), palette: PALETTE, durationMs: 70000 },
+        { grid: makeGrid(1, 1), palette: PALETTE, durationMs: -5 },
+      ]),
+    );
+    expect(parsed.frames[0]?.duration).toBe(0xffff);
+    expect(parsed.frames[1]?.duration).toBe(0);
+  });
+
+  it('帧尺寸不一致时报错（.ase 的帧共享同一张画布）', () => {
+    expect(() =>
+      buildAseFrames([
+        { grid: makeGrid(2, 2), palette: PALETTE },
+        { grid: makeGrid(3, 3), palette: PALETTE },
+      ]),
+    ).toThrow(/尺寸不一致/);
+  });
+
+  it('不给帧时也不会写出空文件', () => {
+    expect(() => buildAseFrames([])).toThrow(/至少需要一帧/);
   });
 });

@@ -35,6 +35,11 @@ export interface BatchItem {
   error?: string;
   /** 逐项参数覆盖：与全局 settings 合并后使用 */
   override?: Partial<ConvertSettings>;
+  /**
+   * 这一项的原始帧时长（毫秒）。只有「从动图拆出来的帧」才有；
+   * GIF / .ase 动画导出用它，普通图片没有这个字段。
+   */
+  delayMs?: number;
   /** 列表缩略图（转换前的原图），移除时记得 close */
   thumb?: ImageBitmap;
 }
@@ -54,18 +59,24 @@ function nextItemId(): string {
   return `batch-${Date.now().toString(36)}-${itemSeq}`;
 }
 
-export function createBatchItem(file: File): BatchItem {
-  return {
+export function createBatchItem(file: File, delayMs?: number): BatchItem {
+  const item: BatchItem = {
     id: nextItemId(),
     file,
     fileName: file.name || '未命名',
     size: file.size,
     status: 'pending',
   };
+  // exactOptionalPropertyTypes 关着，但这里仍显式只在有值时写入：
+  // JSON / 存档里不会平白多出一个 null 字段
+  if (delayMs !== undefined) item.delayMs = delayMs;
+  return item;
 }
 
 export function createBatchItems(files: readonly File[]): BatchItem[] {
-  return files.map(createBatchItem);
+  // 不能直接 map(createBatchItem)：map 会把下标当成第二个参数传进去，
+  // 于是每张普通图片都会莫名带上 delayMs = 0/1/2……
+  return files.map((file) => createBatchItem(file));
 }
 
 /** 按 id 打补丁；id 不存在时原样返回，避免调用方还要先查一次 */
