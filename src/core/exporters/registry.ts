@@ -22,6 +22,7 @@ import {
   type BlueprintCsvOptions,
   type BlueprintOptions,
 } from './blueprint';
+import { buildAseFile } from './ase';
 import type { BlockMap } from './blocks';
 import {
   buildGridJson,
@@ -292,6 +293,24 @@ const blueprintPngExporter: Exporter = {
   },
 };
 
+const aseExporter: Exporter = {
+  id: 'ase',
+  label: 'Aseprite 工程',
+  description: '原生 .ase：单图层 32 位 RGBA，可直接在 Aseprite 里继续画',
+  needs: 'grid',
+  options: [],
+  async run(ctx) {
+    if (!ctx.grid) throw new Error('还没有转换结果');
+    const bytes = buildAseFile(ctx.grid, ctx.palette);
+    // 用 Blob 包 ArrayBuffer：数组本身可能是某个大缓冲的视图，直接交给 Blob 会多传字节
+    const blob = new Blob([bytes.slice().buffer as ArrayBuffer], { type: 'application/octet-stream' });
+    return {
+      files: [{ name: `${stemOf(ctx.sourceName)}.ase`, blob }],
+      note: `${ctx.grid.w}×${ctx.grid.h} · 1 图层 · Aseprite 1.0+`,
+    };
+  },
+};
+
 const blueprintCsvExporter: Exporter = {
   id: 'blueprintCsv',
   label: '建造清单 CSV',
@@ -339,6 +358,7 @@ const blueprintCsvExporter: Exporter = {
 export const EXPORTERS: readonly Exporter[] = [
   pngExporter,
   gridJsonExporter,
+  aseExporter,
   spritesheetExporter,
   blueprintPngExporter,
   blueprintCsvExporter,

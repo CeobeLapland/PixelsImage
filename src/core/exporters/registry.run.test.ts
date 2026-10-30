@@ -265,12 +265,35 @@ describe('精灵图集导出器', () => {
   });
 });
 
+describe('Aseprite 导出器', () => {
+  it('产出一个 .ase 文件', async () => {
+    const result = await run('ase', makeContext());
+    expect(result.files).toHaveLength(1);
+    expect(result.files[0].name).toBe('hero.ase');
+  });
+
+  it('内容不是空的，且声明了 Aseprite 魔数', async () => {
+    const result = await run('ase', makeContext());
+    const bytes = new Uint8Array(await result.files[0].blob.arrayBuffer());
+    expect(bytes.length).toBeGreaterThan(128);
+    // 文件头偏移 4 处是 WORD 0xA5E0
+    const view = new DataView(bytes.buffer);
+    expect(view.getUint16(4, true)).toBe(0xa5e0);
+    expect(view.getUint16(8, true)).toBe(4); // 宽
+    expect(view.getUint16(10, true)).toBe(3); // 高
+  });
+
+  it('没有网格时报错', async () => {
+    await expect(run('ase', makeContext({ grid: null }))).rejects.toThrow('还没有转换结果');
+  });
+});
+
 describe('选项表与执行的一致性', () => {
   it('每个导出器的默认选项都能直接跑通（图集除外，它需要队列）', async () => {
     const ctx = makeContext({
       batchTiles: [{ grid: makeGrid(4, 4), palette: PALETTE, name: 'a' }],
     });
-    for (const id of ['png', 'gridJson', 'spritesheet', 'blueprintPng', 'blueprintCsv']) {
+    for (const id of ['png', 'gridJson', 'spritesheet', 'blueprintPng', 'blueprintCsv', 'ase']) {
       const result = await run(id, ctx);
       expect(result.files.length).toBeGreaterThan(0);
       for (const file of result.files) {

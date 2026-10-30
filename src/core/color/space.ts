@@ -1,9 +1,8 @@
 /**
  * 色彩空间转换。
  *
- * 只实现量化需要的方向：sRGB → CIELAB。
- * 反向（LAB → sRGB）目前不需要：量化是「找最近的调色板色」，
- * 结果永远是调色板里已有的颜色，不需要从 LAB 反算回来。
+ * 量化只需要 sRGB → CIELAB；**LAB → sRGB 是明度阶梯（M7）带来的新需求** ——
+ * 那边要在保持 a/b（色相与彩度）的前提下改 L*，再算回能画出来的 RGB。
  */
 
 /** sRGB 8bit → 线性光。查表避免每像素一次 pow */
@@ -62,6 +61,57 @@ export function paletteToLab(colors: readonly (readonly number[])[]): Float32Arr
     rgbToLab(c[0], c[1], c[2], out, i * 3);
   }
   return out;
+}
+
+/* --------------------------------------------------------- LAB → sRGB */
+
+/** 线性光 → sRGB 8bit（带钳制，因为 LAB 里合法的值也可能超出 sRGB 色域） */
+function linearToSrgb(v: number): number {
+  if (v <= 0) return 0;
+  if (v >= 1) return 255;
+  const c = v <= 0.0031308 ? v * 12.92 : 1.055 * Math.pow(v, 1 / 2.4) - 0.055;
+  const out = Math.round(c * 255);
+  return out < 0 ? 0 : out > 255 ? 255 : out;
+}
+
+/**
+ * CIELAB → sRGB(0-255)。
+ *
+ * 与 `rgbToLab` 用同一组 D65 白点常量，两个方向必须对称，否则往返色偏
+ * （那是「改了明度之后色相跟着漂」的根源）。
+ *
+ * 超出 sRGB 色域的结果会被钳制。这无法避免：保持 a/b 不变地提高 L*，
+ * 鲜艳的色在两端本来就会跑出色域 —— 但钳制只影响「画不出来的部分」，
+ * 中间几档通常仍在范围内。
+ */
+export function labToRgb(
+  L: number,
+  a: number,
+  b: number,
+  out: number[] | Uint8ClampedArray,
+  offset = 0,
+): void {
+  const fy = (L + 16) / 116;
+  const fx = fy + a / 500;
+  const fz = fy - b / 200;
+
+  const xyzF = (t: number): number => {
+    const t3 = t * t * t;
+    return t3 > 0.008856451679035631 ? t3 : (t - 16 / 116) / 7.787037037037037;
+  };
+
+  const x = WHITE_X * xyzF(fx);
+  const y = WHITE_Y * xyzF(fy);
+  const z = WHITE_Z * xyzF(fz);
+
+  // XYZ → sRGB 线性（rgbToLab 里那组矩阵的逆）
+  const lr = 3.2404542 * x - 1.5371385 * y - 0.4985314 * z;
+  const lg = -0.969266 * x + 1.8760108 * y + 0.041556 * z;
+  const lb = 0.0556434 * x - 0.2040259 * y + 1.0572252 * z;
+
+  out[offset] = linearToSrgb(lr);
+  out[offset + 1] = linearToSrgb(lg);
+  out[offset + 2] = linearToSrgb(lb);
 }
 
 const HEX_ONLY = /^[0-9a-fA-F]+$/;

@@ -37,7 +37,9 @@ import {
 import { createZip, type ZipEntry } from '@/core/batch/zip';
 import { applyCellEdits, applyEditWrites, changesToEdits, cloneEditLayer, countEdits, resampleEditLayer, writeCell, type CellEdit, type CellWrite } from '@/core/edit';
 import { composite } from '@/core/composite';
+import { buildLightnessLadder, nearestLadderIndex } from '@/core/color/ladder';
 import { countUsedColors } from '@/core/color/quantize';
+import { toHex } from '@/core/color/space';
 import { decodeImage, blobToDataUrl, dataUrlToBlob, formatBytes, isProbablyImage, loadSourceImage, makeThumbnail } from '@/core/image';
 import { checkSeams, type SeamReport } from '@/core/assists/tile';
 import { countSolidCells, planOutline, type OutlineOptions } from '@/core/assists/outline';
@@ -249,6 +251,14 @@ export interface PaletteSlice {
   mergePaletteColors: (tolerance: number) => void;
   /** 新增一块自定义板并切过去 */
   addCustomPalette: (palette: Palette) => void;
+  /**
+   * 为调色板里某个颜色生成「明度阶梯」，追加到当前板末尾并选中离原色最近的一档。
+   *
+   * 直接在 LAB 里改 L*（见 core/color/ladder.ts），所以是同色相的一串明暗。
+   * 追加而不插入：追加不会改变已有槽位的索引，底图与编辑层一个字都不用动；
+   * 插入则要整体重映射，为了「排序好看」付这个代价不值。
+   */
+  addLightnessLadder: (index: number, steps: number) => void;
   /** 重命名自定义板；重名会自动加序号 */
   renamePalette: (id: string, name: string) => void;
   /** 删除自定义板；删的若正是当前板则切回默认板 */
@@ -306,7 +316,11 @@ export interface BatchSlice {
   batchRunFingerprint: string | null;
   /** 正在编辑器里单独微调的队列项 */
   batchActiveId: string | null;
+  /** 并排对比视图是否打开 */
+  compareOpen: boolean;
   batchPresets: BatchPreset[];
+
+  setCompareOpen: (open: boolean) => void;
 
   /** 加入队列；顺便生成缩略图（失败也不影响入队） */
   addBatchFiles: (files: readonly File[]) => void;
@@ -1017,6 +1031,28 @@ const createPaletteSlice: StateCreator<AppStore, [], [], PaletteSlice> = (set, g
       });
     },
 
+    addLightnessLadder: (index, steps) => {
+      const state = get();
+      const color = state.palette.colors[index];
+      if (!color) return;
+
+      const ladder = buildLightnessLadder(color, { steps });
+      const target = writable();
+      const offset = target.colors.length;
+      const next: Palette = { ...target, colors: [...target.colors, ...ladder] };
+      commitPalette(
+        next,
+        target !== state.palette,
+        `已为 ${toHex(color[0], color[1], color[2])} 追加 ${ladder.length} 档明暗（第 ${offset + 1}–${offset + ladder.length} 色）`,
+      );
+
+      // 前景色落到离原色最近的那一档：用户刚点的颜色不该被抢走
+      set({
+        foreground: offset + nearestLadderIndex(ladder, color),
+        background: Math.min(state.background, next.colors.length - 1),
+      });
+    },
+
     renamePalette: (id, rawName) => {
       const state = get();
       const target = state.customPalettes[id];
@@ -1173,7 +1209,10 @@ const createBatchSlice: StateCreator<AppStore, [], [], BatchSlice> = (set, get) 
   batchRunning: false,
   batchRunFingerprint: null,
   batchActiveId: null,
+  compareOpen: false,
   batchPresets: loadBatchPresets(),
+
+  setCompareOpen: (compareOpen) => set({ compareOpen }),
 
   addBatchFiles: (files) => {
     const images = files.filter(isProbablyImage);

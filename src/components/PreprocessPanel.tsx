@@ -15,13 +15,21 @@ const BG_MODE_OPTIONS = [
   {
     value: 'edges',
     label: '只去边缘',
-    title: '只擦掉与画面边缘连通的部分。主体内部的白色（高光、白衣服）不会被误杀 —— 默认用它',
+    title:
+      '只擦掉与画面边缘连通的部分。主体内部同色的区域（高光、白衣服、水印字）不会被误杀 —— 默认用它',
   },
   {
     value: 'all',
-    label: '全部近白',
-    title: '所有接近白色的像素都擦掉，包括主体内部的。主体里确实没有白时才用',
+    label: '全部近色',
+    title: '所有接近底色的像素都擦掉，包括主体内部的。主体里确实没有同色区域时才用',
   },
+] as const;
+
+/** 底色快捷项。绿幕实拍很少是纯 #00ff00，所以这只是起点，取色器可以改 */
+const BG_PRESETS = [
+  { value: '#ffffff', label: '白', title: '最常见：素材图、扫描件、AI 生成图' },
+  { value: '#00ff00', label: '绿', title: '绿幕。按你片子的实际绿色选，纯绿在实拍里很少见' },
+  { value: '#000000', label: '黑', title: '黑底素材（夜景、产品图）' },
 ] as const;
 
 /**
@@ -45,7 +53,7 @@ export function PreprocessPanel(): JSX.Element {
     <div className="section__body">
       {/* ---------------- 按颜色去背景（M7 新增） ---------------- */}
       <Segmented
-        label="去除背景色（白底）"
+        label="去除背景色"
         value={preprocess.removeBackground}
         options={BG_MODE_OPTIONS}
         columns={3}
@@ -53,6 +61,35 @@ export function PreprocessPanel(): JSX.Element {
       />
       {removing && (
         <>
+          <div className="field">
+            <div className="field__head">
+              <span className="field__label">背景色</span>
+              <span className="field__hint">{preprocess.bgColor}</span>
+            </div>
+            <div className="bgpick">
+              <input
+                className="bgpick__swatch"
+                type="color"
+                value={preprocess.bgColor}
+                title="要判定为背景的颜色。白底、绿幕、蓝幕都选在这里"
+                onChange={(event) => patchPreprocess({ bgColor: event.target.value })}
+              />
+              <div className="chips">
+                {BG_PRESETS.map((preset) => (
+                  <button
+                    key={preset.value}
+                    type="button"
+                    className="chip"
+                    aria-pressed={preprocess.bgColor.toLowerCase() === preset.value}
+                    title={preset.title}
+                    onClick={() => patchPreprocess({ bgColor: preset.value })}
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
           <Slider
             label="容差"
             value={preprocess.bgTolerance}
@@ -64,14 +101,14 @@ export function PreprocessPanel(): JSX.Element {
           <Toggle
             label="边缘软化"
             value={preprocess.bgSoftEdge}
-            title="紧贴背景的一圈过渡色按「离白色多远」给半透明。关掉的话边缘会留下一圈硬白边，降到像素尺寸后更明显"
+            title="紧贴背景的一圈过渡色按「离底色多远」给半透明。关掉的话边缘会留下一圈硬边，降到像素尺寸后更明显"
             onChange={(v) => patchPreprocess({ bgSoftEdge: v })}
           />
           <p className="note note--tight">
-            <b>只去边缘</b>是从画面四条边开始泛洪：只有和边缘连通的近白区域才会被擦掉。
-            所以主体内部的白色（眼睛高光、白字、白衣服）是安全的；
-            但主体与边缘之间若有一段白色通路连着，那部分也会被去掉。
-            容差调得越大越激进，<b>别超过主体最亮的浅色</b>。
+            <b>只去边缘</b>是从画面四条边开始泛洪：只有和边缘连通的近底色区域才会被擦掉。
+            所以主体内部的同色区域（眼睛高光、白字、白衣服）是安全的；
+            但主体与边缘之间若有一段同色通路连着，那部分也会被去掉。
+            容差调得越大越激进，<b>别超过主体里最接近底色的那个颜色</b>。
           </p>
           {preprocess.bgSoftEdge && !preprocess.decontaminate && (
             <p className="note note--warn note--tight">

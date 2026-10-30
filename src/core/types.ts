@@ -94,7 +94,9 @@ export interface PreprocessSettings {
    * 就不会被误杀 —— 这是这类功能最容易挨骂的地方。
    */
   removeBackground: 'none' | 'edges' | 'all';
-  /** 去背景容差：每通道与底色（白）的最大差值，0-255。越大越激进 */
+  /** 背景色（`#rrggbb`）。默认白：绝大多数素材是白底 */
+  bgColor: string;
+  /** 去背景容差：每通道与底色的最大差值，0-255。越大越激进 */
   bgTolerance: number;
   /**
    * 边缘软化：紧贴背景的过渡像素按「离底色有多远」给半透明。
@@ -231,6 +233,7 @@ export const DEFAULT_PREPROCESS: PreprocessSettings = {
   alphaThreshold: 255,
   decontaminate: false,
   removeBackground: 'none',
+  bgColor: '#ffffff',
   // 24：JPEG 的白底通常在 247-255 之间浮动，加上压缩噪声约 ±10，24 够用又不会吃掉浅灰主体
   bgTolerance: 24,
   bgSoftEdge: true,

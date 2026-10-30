@@ -323,3 +323,61 @@ describe('自定义板的注册与删除', () => {
     expect(useApp.getState().settings.paletteId).not.toBe(MC_DYE_PALETTE.id);
   });
 });
+
+describe('明度阶梯（M7）', () => {
+  it('蓝本取内置板时先分叉成自定义板，再追加阶梯', () => {
+    useApp.getState().patchSettings({ paletteId: MC_DYE_PALETTE.id });
+    // 让 store 的 palette 同步成内置板
+    const base = makeGrid(2, 2);
+    apply(base, MC_DYE_PALETTE);
+
+    const before = useApp.getState().palette.colors.length;
+    useApp.getState().addLightnessLadder(5, 5);
+
+    const after = useApp.getState().palette;
+    expect(after.builtin).toBe(false);
+    expect(after.colors.length).toBe(before + 5);
+    expect(useApp.getState().settings.paletteId).toBe(after.id);
+    // 记进了自定义板，刷新后还在
+    expect(useApp.getState().customPalettes[after.id]).toBeDefined();
+  });
+
+  it('追加不改变已有槽位，底图与编辑层不用重映射', () => {
+    const base = makeGrid(3, 1, [0, 1, 2]);
+    apply(base);
+    const before = Array.from(useApp.getState().baseGrid?.indices ?? []);
+
+    useApp.getState().addLightnessLadder(1, 3);
+
+    expect(Array.from(useApp.getState().baseGrid?.indices ?? [])).toEqual(before);
+  });
+
+  it('前景色落在离原色最近的一档，而不是跳去最暗或最亮', () => {
+    const base = makeGrid(2, 2);
+    apply(base);
+    useApp.getState().addLightnessLadder(0, 5);
+
+    const state = useApp.getState();
+    const colors = state.palette.colors;
+    const total = colors.length;
+    // 新追加的 5 档是最后 5 个槽位
+    expect(state.foreground).toBeGreaterThanOrEqual(total - 5);
+    expect(state.foreground).toBeLessThan(total);
+  });
+
+  it('背景索引被夹住，不会越界指向已不存在的槽位', () => {
+    const base = makeGrid(2, 2);
+    apply(base);
+    useApp.getState().setBackground(3);
+    useApp.getState().addLightnessLadder(0, 3);
+    expect(useApp.getState().background).toBeLessThan(useApp.getState().palette.colors.length);
+  });
+
+  it('下标不存在时什么都不做', () => {
+    const base = makeGrid(2, 2);
+    apply(base);
+    const before = useApp.getState().palette.colors.length;
+    useApp.getState().addLightnessLadder(999, 5);
+    expect(useApp.getState().palette.colors.length).toBe(before);
+  });
+});

@@ -1,10 +1,12 @@
 node_modules/
 dist/
 dist-offline/
+dist-cli/
 dist-ssr/
 *.local
 .DS_Store
 .vite/
+out/
 
 # 编辑器
 .idea/

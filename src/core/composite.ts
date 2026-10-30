@@ -90,8 +90,25 @@ export function gridToImageData(grid: PixelGrid, palette: Palette): ImageData {
 export function upscaleNearest(src: ImageData, k: number): ImageData {
   const factor = Math.max(1, Math.round(k));
   if (factor === 1) return src;
+  const scaled = upscaleNearestRgba(src.data, src.width, src.height, factor);
+  return new ImageData(scaled.data, scaled.width, scaled.height);
+}
 
-  const { width: sw, height: sh, data } = src;
+/**
+ * 与 `upscaleNearest` 相同，但只处理裸 RGBA 缓冲。
+ *
+ * 拆出这一支是为了 CLI（M7）：那边没有 `ImageData`（那是浏览器的东西），
+ * 而放大算法本身与它无关。两份实现会各自漂移，所以只留一个真正的循环。
+ */
+export function upscaleNearestRgba(
+  data: Uint8ClampedArray,
+  sw: number,
+  sh: number,
+  k: number,
+): { data: Uint8ClampedArray<ArrayBuffer>; width: number; height: number } {
+  const factor = Math.max(1, Math.round(k));
+  if (factor === 1) return { data: new Uint8ClampedArray(data), width: sw, height: sh };
+
   const dw = sw * factor;
   const dh = sh * factor;
   const out = new Uint8ClampedArray(dw * dh * 4);
@@ -117,5 +134,5 @@ export function upscaleNearest(src: ImageData, k: number): ImageData {
     }
   }
 
-  return new ImageData(out, dw, dh);
+  return { data: out, width: dw, height: dh };
 }

@@ -1,5 +1,6 @@
 import { useState, type JSX } from 'react';
 
+import { DEFAULT_LADDER_STEPS } from '@/core/color/ladder';
 import { parseHex, toHex } from '@/core/color/space';
 import type { Palette, RGBA } from '@/core/types';
 import { BUILTIN_PALETTES } from '@/palettes/builtin';
@@ -31,6 +32,7 @@ export function PalettePanel(): JSX.Element {
   const sortPalette = useApp((s) => s.sortPalette);
   const mergePaletteColors = useApp((s) => s.mergePaletteColors);
   const addCustomPalette = useApp((s) => s.addCustomPalette);
+  const addLightnessLadder = useApp((s) => s.addLightnessLadder);
   const renamePalette = useApp((s) => s.renamePalette);
   const removeCustomPalette = useApp((s) => s.removeCustomPalette);
   const hasGrid = useApp((s) => s.baseGrid !== null);
@@ -38,6 +40,7 @@ export function PalettePanel(): JSX.Element {
   const [editing, setEditing] = useState(false);
   const [editTarget, setEditTarget] = useState(0);
   const [tolerance, setTolerance] = useState(16);
+  const [ladderSteps, setLadderSteps] = useState(DEFAULT_LADDER_STEPS);
 
   const isKmeans = settings.quantize === 'kmeans';
   const customs = Object.values(customPalettes).filter((p): p is Palette => Boolean(p));
@@ -58,6 +61,8 @@ export function PalettePanel(): JSX.Element {
 
   const isSaved = customPalettes[palette.id] !== undefined;
   const slot = Math.min(editTarget, Math.max(0, palette.colors.length - 1));
+  const fgColor: RGBA = palette.colors[foreground] ?? [0, 0, 0, 255];
+  const fgHex = toHex(fgColor[0], fgColor[1], fgColor[2]);
   const target = palette.colors[slot];
 
   const hexOf = (c: RGBA | undefined): string => (c ? toHex(c[0], c[1], c[2]) : '#000000');
@@ -174,6 +179,31 @@ export function PalettePanel(): JSX.Element {
           </div>
         </Field>
       )}
+
+      {/* ---- 明度阶梯 ---- */}
+      <Field label="明度阶梯 · 档数" hint={String(ladderSteps)}>
+        <div className="chips">
+          {[3, 5, 7].map((n) => (
+            <button
+              key={n}
+              type="button"
+              className="chip"
+              aria-pressed={ladderSteps === n}
+              onClick={() => setLadderSteps(n)}
+            >
+              {n}
+            </button>
+          ))}
+          <button
+            type="button"
+            className="chip"
+            title={`以当前前景色 ${fgHex} 为基准，生成 ${ladderSteps} 档同色相的明暗，追加到当前板末尾并选中离原色最近的一档`}
+            onClick={() => addLightnessLadder(foreground, ladderSteps)}
+          >
+            生成阶梯
+          </button>
+        </div>
+      </Field>
 
       {/* ---- 结构操作 ---- */}
       <Field label="排序">

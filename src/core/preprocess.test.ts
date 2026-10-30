@@ -275,6 +275,57 @@ describe('removeBackgroundColor：边缘软化', () => {
   });
 });
 
+describe('removeBackgroundColor：底色的选择', () => {
+  const GREEN_SCREEN = [0, 255, 0, 255] as const;
+
+  it('可指定任意底色 —— 绿幕也能去掉', () => {
+    const data = paint(5, 5, (x, y) =>
+      x === 0 || y === 0 || x === 4 || y === 4 ? GREEN_SCREEN : BLACK,
+    );
+    const result = removeBackgroundColor(data, 5, 5, { ...RB, color: [0, 255, 0] });
+    expect(result.removed).toBe(16);
+    expect(px(data, 5, 5, 2, 2)[3]).toBe(255);
+  });
+
+  it('换成绿幕时，白色不再算背景', () => {
+    const data = paint(5, 5, () => WHITE);
+    expect(removeBackgroundColor(data, 5, 5, { ...RB, color: [0, 255, 0] }).removed).toBe(0);
+  });
+
+  it('不传底色时默认白（老调用方不用改）', () => {
+    const data = paint(5, 5, () => WHITE);
+    expect(removeBackgroundColor(data, 5, 5, RB).removed).toBe(25);
+  });
+
+  it('底色接近但不完全相同的也能去掉（实拍绿幕没有纯绿）', () => {
+    const KEYED = [30, 220, 40, 255] as const;
+    const data = paint(4, 4, () => KEYED);
+    // 距 (0,255,0)：max(30, 35, 40) = 40，容差 48 够
+    expect(removeBackgroundColor(data, 4, 4, { ...RB, tolerance: 48, color: [0, 255, 0] }).removed).toBe(
+      16,
+    );
+  });
+
+  it('预处理里的 bgColor 生效', () => {
+    const out = preprocess(painted(5, 5, (x) => (x === 0 ? WHITE : BLACK)), {
+      ...DEFAULT_PREPROCESS,
+      removeBackground: 'edges',
+      bgColor: '#00ff00',
+    });
+    // 底色是绿，白底不该被去掉
+    expect(px(out.data, 5, 5, 0, 2)[3]).toBe(255);
+  });
+
+  it('bgColor 是乱码时退回白，不让整张图失去处理', () => {
+    const out = preprocess(painted(5, 5, (x) => (x === 0 ? WHITE : BLACK)), {
+      ...DEFAULT_PREPROCESS,
+      removeBackground: 'edges',
+      bgColor: 'not-a-color',
+    });
+    expect(px(out.data, 5, 5, 0, 2)[3]).toBe(0);
+  });
+});
+
 describe('preprocess 里的去背景顺序', () => {
   const isRing = (x: number, y: number, w: number, h: number): boolean =>
     x === 0 || y === 0 || x === w - 1 || y === h - 1;

@@ -11,6 +11,7 @@
  * 全部返回新缓冲，不改动调用方的源数据（源图要能反复重算）。
  */
 
+import { parseHex } from './color/space';
 import type { PreprocessSettings, RGBAImage } from './types';
 
 type RGBAImageData = { width: number; height: number; data: Uint8ClampedArray };
@@ -391,13 +392,21 @@ export function preprocess(src: RGBAImage, p: PreprocessSettings): RGBAImageData
 
   const data = new Uint8ClampedArray(src.data);
 
-  // 去背景放在最前面：判定用原图颜色，与你在原图上看到的「白底」一致。
-  // 放到颜色调整之后，一改亮度就会判错（调暗后白底变灰，容差就够不着了）。
+  // 去背景放在最前面：判定用原图颜色，与你在原图上看到的底色一致。
+  // 放到颜色调整之后，一改亮度就会判错（调暗后底色变灰，容差就够不着了）。
   if (p.removeBackground !== 'none') {
+    // 底色解析失败（旧存档缺字段、被手改成乱码）时退回白 —— 静默用默认值，
+    // 比「整张图不做去背」更接近用户预期，而且面板上的取色器一眼就能看出不是他选的那个
+    const parsed = parseHex(p.bgColor);
+    const color: readonly [number, number, number] = parsed
+      ? ([parsed[0], parsed[1], parsed[2]] as const)
+      : ([255, 255, 255] as const);
+
     removeBackgroundColor(data, src.width, src.height, {
       mode: p.removeBackground,
       tolerance: p.bgTolerance,
       softEdge: p.bgSoftEdge,
+      color,
     });
   }
   if (p.brightness !== 0 || p.contrast !== 0 || p.saturation !== 0) {

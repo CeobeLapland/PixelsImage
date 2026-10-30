@@ -20,11 +20,10 @@ describe('注册表本身', () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it('每个导出器都有标签、说明、至少一个选项', () => {
+  it('每个导出器都有标签与说明（选项可以为空：.ase 就不需要任何参数）', () => {
     for (const exporter of EXPORTERS) {
       expect(exporter.label.length).toBeGreaterThan(0);
       expect(exporter.description.length).toBeGreaterThan(0);
-      expect(exporter.options.length).toBeGreaterThan(0);
     }
   });
 

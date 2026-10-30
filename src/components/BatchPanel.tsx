@@ -129,6 +129,7 @@ export function BatchPanel(): JSX.Element {
   const setBatchScale = useApp((s) => s.setBatchScale);
   const setBatchOpaque = useApp((s) => s.setBatchOpaque);
   const syncBatchSettings = useApp((s) => s.syncBatchSettings);
+  const setCompareOpen = useApp((s) => s.setCompareOpen);
   const runBatch = useApp((s) => s.runBatch);
   const stopBatch = useApp((s) => s.stopBatch);
   const resetBatchResults = useApp((s) => s.resetBatchResults);
@@ -327,6 +328,15 @@ export function BatchPanel(): JSX.Element {
           </ul>
 
           <div className="chips--actions">
+            <button
+              type="button"
+              className="chip"
+              disabled={doneItems.length === 0}
+              title="把已完成的图摊开成一张一张并排看，方便挑哪张出得好"
+              onClick={() => setCompareOpen(true)}
+            >
+              并排对比（{doneItems.length}）
+            </button>
             <button
               type="button"
               className="chip"

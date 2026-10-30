@@ -765,6 +765,38 @@
   font-size: 11px;
 }
 
+/* 底色取色器：一个色块 + 快捷色按钮 */
+.bgpick {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.bgpick__swatch {
+  flex: none;
+  width: 30px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  background: none;
+  cursor: pointer;
+}
+
+.bgpick__swatch::-webkit-color-swatch-wrapper {
+  padding: 2px;
+}
+
+.bgpick__swatch::-webkit-color-swatch {
+  border: none;
+  border-radius: 2px;
+}
+
+.bgpick .chips {
+  margin-top: 0;
+}
+
 /* ============================================================================
    快捷键面板（M7）
    ========================================================================== */
@@ -885,4 +917,152 @@
   font-size: 10px;
   color: var(--ink);
   white-space: nowrap;
+}
+
+/* ============================================================================
+   并排对比（M7）：把批量队列的完成项摊开看
+   ========================================================================== */
+
+.cmp {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(8, 9, 11, 0.72);
+  animation: fade-in 140ms var(--ease) both;
+}
+
+.cmp__panel {
+  width: min(980px, 100%);
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  padding: 14px 16px 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--bg-panel);
+  box-shadow: var(--shadow-pop);
+  animation: slide-up 180ms var(--ease) both;
+}
+
+.cmp__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.cmp__head h2 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+}
+
+.cmp__count {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--ink-faint);
+}
+
+.cmp__head .shortcuts__close {
+  margin-left: auto;
+}
+
+.cmp__grid {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 12px;
+  padding: 12px 2px 4px;
+}
+
+.cmp__cell {
+  margin: 0;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg-inset);
+}
+
+.cmp__pair {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.cmp__pair + .cmp__pair {
+  margin-top: 6px;
+}
+
+.cmp__tag {
+  flex: none;
+  width: 22px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--ink-faint);
+  writing-mode: horizontal-tb;
+}
+
+.cmp__thumb {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  place-items: center;
+  min-height: 74px;
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.cmp__thumb--result {
+  /* 透明区用棋盘格衬出来：结果图本身带 alpha，但小尺寸下看不出「哪里是空的」 */
+  background-color: var(--checker-a);
+  background-image: linear-gradient(45deg, var(--checker-b) 25%, transparent 25%),
+    linear-gradient(-45deg, var(--checker-b) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, var(--checker-b) 75%),
+    linear-gradient(-45deg, transparent 75%, var(--checker-b) 75%);
+  background-size: 10px 10px;
+  background-position: 0 0, 0 5px, 5px -5px, -5px 0;
+}
+
+.cmp__thumb canvas {
+  display: block;
+  max-width: 100%;
+  max-height: 132px;
+  image-rendering: pixelated;
+}
+
+.cmp__none {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--ink-faint);
+}
+
+.cmp__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-top: 6px;
+}
+
+.cmp__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10.5px;
+  color: var(--ink-dim);
+}
+
+.cmp__sub {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--ink-faint);
 }
