@@ -38,7 +38,11 @@ import { createZip, type ZipEntry } from '@/core/batch/zip';
 import { applyCellEdits, applyEditWrites, changesToEdits, cloneEditLayer, countEdits, resampleEditLayer, writeCell, type CellEdit, type CellWrite } from '@/core/edit';
 import { composite } from '@/core/composite';
 import { buildLightnessLadder, nearestLadderIndex } from '@/core/color/ladder';
+import { rotatePaletteHue } from '@/core/color/hue';
 import { planLocalRequantize, type LocalRequantizeRequest } from '@/core/color/requantize';
+import { reversePixelImage, type ReverseResult } from '@/core/reverse';
+import { makeRandomVariant, makeSeeds } from '@/core/random/variant';
+import { getVariantConverter, type VariantPreview } from './variants';
 import { countUsedColors } from '@/core/color/quantize';
 import { toHex } from '@/core/color/space';
 import { decodeImage, blobToDataUrl, dataUrlToBlob, formatBytes, isProbablyImage, loadSourceImage, makeThumbnail, MAX_ANIMATION_FRAMES, sniffImage, splitAnimatedFrames } from '@/core/image';
@@ -76,6 +80,7 @@ import {
 import { buildBatchZip, getBatchConverter } from './batch';
 import {
   createEditLayer,
+  DEFAULT_PREPROCESS,
   makeDefaultSettings,
   PALETTE_MAX_COLORS,
   type ConvertSettings,
@@ -176,6 +181,17 @@ export interface ConvertSlice {
    * 网格尺寸变化时按比例重采样手工编辑层，保证「调参不毁手改」。
    */
   applyResult: (grid: PixelGrid, palette: Palette, info: ConvertInfo) => void;
+  /**
+   * 反向解析：把当前源图按它**实际的像素**还原成网格与调色板（M10）。
+   * 会清掉旧结果与手改，并把参数对齐到解析结果，保证之后重算仍然一致。
+   * 返回解析结果；失败时返回 null 并给出提示。
+   */
+  reverseParseSource: () => ReverseResult | null;
+  /**
+   * 随机灵感：用当前源图跑出 count 张风格各异的预览（参数与调色板随机）。
+   * 没有源图或全部失败时返回空数组（失败会额外提示）。
+   */
+  generateRandomVariants: (count: number) => Promise<VariantPreview[]>;
   setConverting: (converting: boolean) => void;
   setConvertError: (message: string | null) => void;
   clearResult: () => void;
@@ -252,7 +268,7 @@ export interface PaletteSlice {
   /** 合并近似色（分叉内置板 + 重映射索引） */
   mergePaletteColors: (tolerance: number) => void;
   /** 新增一块自定义板并切过去 */
-  addCustomPalette: (palette: Palette) => void;
+  addCustomPalette: (palette: Palette, silent?: boolean) => void;
   /**
    * 为调色板里某个颜色生成「明度阶梯」，追加到当前板末尾并选中离原色最近的一档。
    *
@@ -261,6 +277,11 @@ export interface PaletteSlice {
    * 插入则要整体重映射，为了「排序好看」付这个代价不值。
    */
   addLightnessLadder: (index: number, steps: number) => void;
+  /**
+   * 整块调色板色相偏移（度）。在 CIELAB 里只转色相角，明度与彩度不动。
+   * 网格索引不变，所以全图（含手改）会一起变色。
+   */
+  shiftPaletteHue: (degrees: number) => void;
   /**
    * 把一批颜色追加到当前板末尾（同色不重复追加）。
    * 追加不改已有索引，所以底图与编辑层都不用重映射。
@@ -777,7 +798,100 @@ const createConvertSlice: StateCreator<AppStore, [], [], ConvertSlice> = (set, g
   },
 
   setConverting: (converting) => set({ converting }),
-  setConvertError: (message) => set({ convertError: message, converting: false }),
+  setConvertError: (message) => set({ converting: false, convertError: message }),
+
+  generateRandomVariants: async (count) => {
+    const state = get();
+    if (!state.source) {
+      state.pushToast('warn', '先载入一张图，再生成随机变体');
+      return [];
+    }
+
+    const pool: Palette[] = [
+      ...BUILTIN_PALETTES,
+      ...Object.values(state.customPalettes).filter((p): p is Palette => Boolean(p)),
+    ];
+    // 每次生成换一个起点，才不会「换一批」还是同一组参数
+    const seeds = makeSeeds(Math.max(1, Math.min(12, Math.round(count))), Math.floor(Math.random() * 0xffffffff));
+    const converter = getVariantConverter();
+    const previews: VariantPreview[] = [];
+
+    try {
+      for (const seed of seeds) {
+        const plan = makeRandomVariant(seed, pool);
+        const palette = resolvePalette(plan.settings.paletteId, state.customPalettes);
+        const outcome = await converter.convert(state.source.imageData, plan.settings, palette);
+        previews.push({
+          plan,
+          palette: outcome.palette,
+          grid: outcome.grid,
+          usedColors: outcome.usedColors,
+          ms: outcome.ms,
+        });
+      }
+    } catch (err) {
+      // 部分成功也返回：用户至少能看到已经跑出来的那几张
+      state.pushToast('error', `随机生成中断：${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    return previews;
+  },
+
+  reverseParseSource: () => {
+    const state = get();
+    if (!state.source) {
+      state.pushToast('warn', '先载入一张像素图，再反解析');
+      return null;
+    }
+
+    let result: ReverseResult;
+    try {
+      result = reversePixelImage(state.source.imageData);
+    } catch (err) {
+      state.pushToast('warn', err instanceof Error ? err.message : String(err));
+      return null;
+    }
+
+    const { grid } = result;
+
+    /*
+     * 反解析的网格就是「最终结果」，所以先清空旧结果与手改（新素材没有旧手改可言）。
+     * 再把参数对齐到它：面积平均 + 精确网格尺寸 + 同一块板 + 不抖动，
+     * 这样之后随便调一项设置，重算出来的仍然和这张网格一致，不会悄悄「跳一下」。
+     */
+    state.clearResult();
+    get().patchSettings({
+      targetW: grid.w,
+      targetH: grid.h,
+      sampling: 'area',
+      quantize: 'palette',
+      dither: 'none',
+      ditherStrength: 1,
+      trimTransparent: false,
+      pixelPerfect: false,
+      preprocess: { ...DEFAULT_PREPROCESS },
+    });
+
+    get().addCustomPalette(result.palette, true);
+    const applied = get().palette;
+    get().applyResult(grid, applied, {
+      targetW: grid.w,
+      targetH: grid.h,
+      usedColors: countUsedColors(grid.indices, grid.alpha),
+      trimmed: false,
+      ms: 0,
+      fallback: false,
+    });
+
+    get().pushToast(
+      'info',
+      `反解析完成：${grid.w}×${grid.h} 格` +
+        (result.scale > 1 ? `，识别到 ${result.scale}× 放大` : '，按原始像素') +
+        `，${applied.colors.length} 色` +
+        (result.quantized ? `（原图 ${result.sourceColors} 色，已量化）` : ''),
+    );
+    return result;
+  },
 
   clearResult: () =>
     set({
@@ -1033,14 +1147,17 @@ const createPaletteSlice: StateCreator<AppStore, [], [], PaletteSlice> = (set, g
       );
     },
 
-    addCustomPalette: (palette) => {
+    addCustomPalette: (palette, silent) => {
       // 一定换新 id：提色结果是按参数命名的（kmeans-16），直接沿用会互相覆盖
-      registerAndSelect({
-        ...palette,
-        id: nextCustomId(),
-        builtin: false,
-        source: palette.source ?? 'custom',
-      });
+      registerAndSelect(
+        {
+          ...palette,
+          id: nextCustomId(),
+          builtin: false,
+          source: palette.source ?? 'custom',
+        },
+        silent,
+      );
     },
 
     addLightnessLadder: (index, steps) => {
@@ -1063,6 +1180,26 @@ const createPaletteSlice: StateCreator<AppStore, [], [], PaletteSlice> = (set, g
         foreground: offset + nearestLadderIndex(ladder, color),
         background: Math.min(state.background, next.colors.length - 1),
       });
+    },
+
+    shiftPaletteHue: (degrees) => {
+      const rounded = Math.round(degrees);
+      if (!Number.isFinite(degrees) || rounded === 0) {
+        get().pushToast('info', '色相偏移 0° 不会改变任何颜色');
+        return;
+      }
+
+      const state = get();
+      const target = writable();
+      const colors = rotatePaletteHue(target.colors, rounded);
+      commitPalette(
+        { ...target, colors },
+        target !== state.palette,
+        `调色板色相偏移 ${rounded > 0 ? '+' : ''}${rounded}°。` +
+          '网格色号没变，变的是色号指向的颜色 —— 用「反向偏移」可以还原',
+      );
+      // 调色板换了但网格没换，画布要重绘（与 editPaletteColor 同一做法）
+      set((s) => ({ editVersion: s.editVersion + 1 }));
     },
 
     appendPaletteColors: (colors, note) => {

@@ -8,12 +8,14 @@ import { ComparePanel } from './ComparePanel';
 import { ConvertPanel } from './ConvertPanel';
 import { ExportPanel } from './ExportPanel';
 import { ExtractPanel } from './ExtractPanel';
+import { InspirationPanel } from './InspirationPanel';
 import { LayerPanel } from './LayerPanel';
 import { LocalPanel } from './LocalPanel';
 import { PaletteIoPanel } from './PaletteIoPanel';
 import { PalettePanel } from './PalettePanel';
 import { PreprocessPanel } from './PreprocessPanel';
 import { ProjectPanel } from './ProjectPanel';
+import { ReversePanel } from './ReversePanel';
 import { AssistsPanel } from './AssistsPanel';
 import { Row, Section } from './Section';
 
@@ -115,6 +117,14 @@ export function SidePanel(): JSX.Element {
           <ConvertPanel />
         </Section>
 
+        <Section title="反向解析" defaultOpen={false}>
+          <ReversePanel />
+        </Section>
+
+        <Section title="随机灵感" defaultOpen={false}>
+          <InspirationPanel />
+        </Section>
+
         <Section title="转换预设" defaultOpen={false} badge={presetCount > 0 ? <span className="badge">{presetCount}</span> : undefined}>
           <ProjectPanel />
         </Section>
@@ -203,7 +213,7 @@ export function SidePanel(): JSX.Element {
           </ul>
           <p className="note">
             M0–M8 已完成：转换 / 编辑器 / 调色板 / 辅助 / 批量 / 导出 / 存档 / 动图。
-            当前在补可选扩展（局部转换等）。
+            可选扩展也全部完成（局部换板、反向解析、色相偏移、随机灵感）。
           </p>
         </Section>
       </div>

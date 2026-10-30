@@ -33,6 +33,7 @@ export function PalettePanel(): JSX.Element {
   const mergePaletteColors = useApp((s) => s.mergePaletteColors);
   const addCustomPalette = useApp((s) => s.addCustomPalette);
   const addLightnessLadder = useApp((s) => s.addLightnessLadder);
+  const shiftPaletteHue = useApp((s) => s.shiftPaletteHue);
   const renamePalette = useApp((s) => s.renamePalette);
   const removeCustomPalette = useApp((s) => s.removeCustomPalette);
   const hasGrid = useApp((s) => s.baseGrid !== null);
@@ -41,6 +42,7 @@ export function PalettePanel(): JSX.Element {
   const [editTarget, setEditTarget] = useState(0);
   const [tolerance, setTolerance] = useState(16);
   const [ladderSteps, setLadderSteps] = useState(DEFAULT_LADDER_STEPS);
+  const [hueDeg, setHueDeg] = useState(30);
 
   const isKmeans = settings.quantize === 'kmeans';
   const customs = Object.values(customPalettes).filter((p): p is Palette => Boolean(p));
@@ -204,6 +206,41 @@ export function PalettePanel(): JSX.Element {
           </button>
         </div>
       </Field>
+
+      {/* ---- 色相偏移 ---- */}
+      <Field label="色相偏移" hint={`${hueDeg > 0 ? '+' : ''}${hueDeg}°`}>
+        <input
+          className="slider"
+          type="range"
+          min={-180}
+          max={180}
+          step={1}
+          value={hueDeg}
+          onChange={(event) => setHueDeg(Number(event.target.value))}
+        />
+        <div className="chips">
+          <button
+            type="button"
+            className="chip"
+            title="把整块调色板的色相转这个角度（明度与彩度不动，灰阶不受影响）"
+            onClick={() => shiftPaletteHue(hueDeg)}
+          >
+            偏移整块板
+          </button>
+          <button
+            type="button"
+            className="chip"
+            title="按相反方向转同样的角度，用来还原上一次偏移"
+            onClick={() => shiftPaletteHue(-hueDeg)}
+          >
+            反向偏移
+          </button>
+        </div>
+      </Field>
+      <p className="note note--tight">
+        只转色相角：明暗关系不变，黑白灰不会被染色。全图（含手改）会一起变色 ——
+        网格里的色号没动，变的是色号指向的颜色。
+      </p>
 
       {/* ---- 结构操作 ---- */}
       <Field label="排序">
